@@ -1,0 +1,13 @@
+<!-- System Unavailable file:
+     Place this file under $SBEAMS_HOME/ to temporarily
+     disable user access to sbeams and show the contents
+     of this page instead of the login prompt.
+     Edit contents to taste. -->
+
+<br><br><br><br>
+SBEAMS is Unavailable....<br><br>
+The SBEAMS server is down due to scheduled system maintenance.
+<br><br>
+It is not expected to be up until Monday 9am.
+<br><br>
+Contact the SBEAMS administrator with questions.

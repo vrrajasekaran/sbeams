@@ -1,0 +1,141 @@
+# $Id$
+#
+# SBEAMS.conf.template  - Template for configuration settings
+# SBEAMS.conf           - Local configuration settings file
+#
+# Do not edit the template file.  Make a copy and edit the copy:
+#   cp SBEAMS.conf.template SBEAMS.conf
+#   vi SBEAMS.conf
+#     (edit to reflect local installation)
+#
+
+
+# Default settings pass through to individual instances unless overridden
+[default]
+
+#### Title of the system is sprinkled throughout
+DBTITLE = SBEAMS
+
+#### User ID (UID) of the web server user (often apache or nobody)
+WWW_UID = 48
+
+#### Crypt key used for cookies.  Change it to something unique for your site.
+#### If a cracker has your key and a valid username, he could generate a cookie
+#### that would permit entry
+CRYPT_KEY = ChangeThis!
+
+#### Color of the navigation bar on the left side
+BARCOLOR = #cdd1e7
+
+#### Hostname of your web server.  Only used in emergencies.
+HOSTNAME = webhost.domain.org
+
+#### A contact username and email address for SBEAMS issues
+DBADMIN = SBEAMS Administrator <sbeams@localdomain.org>
+
+#### URL for triggering a Web Start of Cytoscape. Experimental
+CYTOSCAPE_URL = webhost.domain.org:8080/cytoscape
+
+
+#### Set the RDBMS servername or DSN name and the name of the sbeams database
+DB_SERVER   = sqlhostname
+DB_DATABASE = sbeams
+
+#### Set a read/write user and password.  Should use encrypted password!
+DB_USER     = sbeams
+DB_PASS     = sbeamspassword
+
+#### set a read only user and password.  Should use encrypted password!
+DB_RO_USER  = sbeamsro
+DB_RO_PASS  = sbeamsropassword
+
+#### Set the Perl DBI driver string (DSN).  Different RDBMS flavors use
+#### different formats here
+DB_DRIVER   = DBI:Sybase:server=$DB_SERVER;database=$DB_DATABASE
+#DB_DRIVER   = DBI:mysql:$DB_DATABASE:$DB_SERVER
+#DB_DRIVER   = DBI:Pg:dbname=$DB_DATABASE;host=$DB_SERVER
+#DB_DRIVER   = DBI:Oracle:SID=$DB_DATABASE;HOST=$DB_SERVER;PORT=1521
+#DB_DRIVER   = DBI:DB2:$DB_DATABASE
+#DB2INSTANCE = db2inst1
+#
+
+#### Set the RDBMS flavor.  This triggers engine-specific code within the
+#### system.  Can be one of "MS SQL Server", "MySQL", "PostgreSQL", "Oracle",
+#### or "DB2" at present. Add your own support for more!
+DB_TYPE     = MS SQL Server
+#DB_TYPE     = MySQL
+#DB_TYPE     = Postgresql
+#DB_TYPE     = Oracle
+#DB_TYPE     = DB2
+#
+
+
+#### Set the default database prefix as a function of module to be prepended
+#### before the actual table names.
+#### This is often "DATABASENAME.SCHEMANAME."
+#### For databases that don't support cross-database queries
+#### (e.g. PostgreSQL 7.2), the entries should all be empty strings.
+DBPREFIX{Core}          = sbeams.dbo.
+DBPREFIX{BEDB}          = BEDB.dbo.
+DBPREFIX{BioLink}       = BioLink.dbo.
+DBPREFIX{Biosap}        = Biosap.dbo.
+DBPREFIX{Cytometry}     = Cytometry.dbo.
+DBPREFIX{Genotyping}    = Genotyping.dbo.
+DBPREFIX{Immunostain}   = Immunostain.dbo.
+DBPREFIX{Interactions}   = Interactions.dbo.
+DBPREFIX{Inkjet}   = Inkjet.dbo.
+DBPREFIX{Microarray}    = sbeams.dbo.
+DBPREFIX{Ontology}      = Ontology.dbo.
+DBPREFIX{Oligo}         = Oligo.dbo.
+DBPREFIX{PhenoArray}    = PhenoArray.dbo.
+DBPREFIX{PeptideAtlas}  = PeptideAtlas.dbo.
+DBPREFIX{ProteinStructure}    = ProteinStructure.dbo.
+DBPREFIX{Proteomics}    = proteomics.dbo.
+DBPREFIX{SNP}           = SNP.dbo.
+DBPREFIX{APD}           = APD.dbo.
+DBPREFIX{UESC}          = UESC.dbo.
+
+#### Set the raw data directory location as a function of module.
+RAW_DATA_DIR{Proteomics} = /raw/datasets/root/location
+
+
+[main]
+DBVERSION              = <FONT COLOR=red>Primary</FONT>
+BGCOLOR                = #BFD8D8
+BARCOLOR               = #cdd1e7
+HTML_BASE_DIR          = /sbeams
+PHYSICAL_BASE_DIR      = /local/www/html/sbeams
+UPLOAD_DIR             = /local/data/sbeams
+
+
+[dev1]
+DBVERSION              = Dev Branch 1
+BGCOLOR                = #FF9999
+HTML_BASE_DIR          = /dev1/sbeams
+PHYSICAL_BASE_DIR      = /local/www/html/dev1/sbeams
+UPLOAD_DIR             = /local/data/dev1/sbeams
+
+
+[dev2]
+DBVERSION              = Dev Branch 2
+BGCOLOR                = #FFFF99
+HTML_BASE_DIR          = /dev2/sbeams
+PHYSICAL_BASE_DIR      = /local/www/html/dev2/sbeams
+UPLOAD_DIR             = /local/data/dev2/sbeams
+
+
+[mysqldev1]
+DB_SERVER              = mysql
+DB_DATABASE            = sbeams
+DB_USER                = sbeams
+DB_PASS                = sbeamspassword
+DB_DRIVER              = DBI:mysql:$DB_DATABASE:$DB_SERVER
+DB_TYPE                = MySQL
+DBVERSION              = MySQL Dev Branch 1
+BGCOLOR                = #FFFF99
+HTML_BASE_DIR          = /mysqldev1/sbeams
+PHYSICAL_BASE_DIR      = /local/www/html/mysqldev1/sbeams
+UPLOAD_DIR             = /local/data/mysqldev1/sbeams
+DBPREFIX{Biosap}       = biosap.
+
+
