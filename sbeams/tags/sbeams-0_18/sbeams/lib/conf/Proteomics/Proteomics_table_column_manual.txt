@@ -1,0 +1,88 @@
+#MANUAL updates to table_column
+
+UPDATE table_column
+  SET optionlist_query = '
+SELECT DISTINCT search_batch_id,username + '' - '' + experiment_tag + '' -> '' + set_tag,username,experiment_tag,set_tag
+  FROM $TBPR_PROTEOMICS_EXPERIMENT PE
+  INNER JOIN $TBPR_SEARCH_BATCH SB ON ( PE.experiment_id = SB.experiment_id )
+  INNER JOIN $TBPR_BIOSEQUENCE_SET BSS ON ( SB.biosequence_set_id = BSS.biosequence_set_id )
+  INNER JOIN $TB_USER_LOGIN UL ON ( PE.contact_id = UL.contact_id )
+ WHERE PE.project_id IN ( $accessible_project_ids )
+ ORDER BY username,experiment_tag,set_tag'
+ WHERE (   table_name = 'PR_GetSearchHits'
+        OR table_name = 'PR_GetSearch'
+        OR table_name = 'BrowseAnnotatedPeptides'
+        OR table_name = 'PR_CompareExperiments'
+        OR table_name = 'PR_CompareMSRuns'
+        OR table_name = 'PR_CompareBySpectrum'
+        OR table_name = 'PR_SummarizePeptides'
+       )
+   AND column_name = 'search_batch_id'
+GO
+
+
+UPDATE table_column
+  SET optionlist_query = '
+SELECT DISTINCT SB.search_batch_id,username + '' - '' + experiment_tag + '' -> '' + set_tag,username,experiment_tag,set_tag
+  FROM $TBPR_PROTEOMICS_EXPERIMENT PE
+  INNER JOIN $TBPR_SEARCH_BATCH SB ON ( PE.experiment_id = SB.experiment_id )
+  INNER JOIN $TBPR_SEARCH_BATCH_PROTEIN_SUMMARY SBPS ON ( SB.search_batch_id = SBPS.search_batch_id )
+  INNER JOIN $TBPR_BIOSEQUENCE_SET BSS ON ( SB.biosequence_set_id = BSS.biosequence_set_id )
+  INNER JOIN $TB_USER_LOGIN UL ON ( PE.contact_id = UL.contact_id )
+ WHERE PE.project_id IN ( $accessible_project_ids )
+ ORDER BY username,experiment_tag,set_tag'
+ WHERE (   table_name = 'PR_BrowseProteinSummary'
+       )
+   AND column_name = 'search_batch_id'
+GO
+
+
+UPDATE table_column
+  SET optionlist_query = '
+	SELECT experiment_id,username + '' - '' + experiment_tag + '' ('' + experiment_name + '')''
+	  FROM $TBPR_PROTEOMICS_EXPERIMENT PE
+	  LEFT JOIN $TB_USER_LOGIN UL ON ( PE.contact_id = UL.contact_id )
+	 WHERE PE.record_status != ''D''
+           AND PE.project_id IN ( $accessible_project_ids )
+	 ORDER BY username,experiment_tag,experiment_name
+  '
+ WHERE table_name = 'PR_SummarizeFractions'
+   AND column_name = 'experiment_id'
+GO
+
+
+UPDATE table_column
+  SET optionlist_query = '
+	SELECT project_id,username + '' - '' + P.name
+	  FROM $TB_PROJECT P
+	  LEFT JOIN $TB_USER_LOGIN UL ON ( P.PI_contact_id=UL.contact_id )
+	  LEFT JOIN $TB_USER_WORK_GROUP UWG
+	       ON ( P.PI_contact_id = UWG.contact_id )
+	  LEFT JOIN $TB_WORK_GROUP WG
+	       ON ( UWG.work_group_id = WG.work_group_id )
+	 WHERE P.record_status != ''D''
+	   AND WG.work_group_name = ''Proteomics_user''
+           AND P.project_id IN ( $accessible_project_ids )
+	 ORDER BY username,P.name
+  '
+ WHERE table_name = 'PR_SummarizeFractions'
+   AND column_name = 'project_id'
+GO
+
+
+UPDATE table_column
+  SET optionlist_query = '
+SELECT DISTINCT fraction_id,username + '' - '' + experiment_tag + '' -> '' + set_tag + '' -> '' + fraction_tag,username,experiment_tag,set_tag,fraction_tag
+  FROM $TBPR_PROTEOMICS_EXPERIMENT PE
+  INNER JOIN $TBPR_SEARCH_BATCH SB ON ( PE.experiment_id = SB.experiment_id )
+  INNER JOIN $TBPR_FRACTION F ON ( PE.experiment_id = F.experiment_id )
+  INNER JOIN $TBPR_BIOSEQUENCE_SET BSS ON ( SB.biosequence_set_id = BSS.biosequence_set_id )
+  INNER JOIN $TB_USER_LOGIN UL ON ( PE.contact_id = UL.contact_id )
+ WHERE SB.search_batch_id IN ( $parameters{search_batch_id} )
+ ORDER BY username,experiment_tag,set_tag,fraction_tag'
+ WHERE table_name = 'PR_CompareMSRuns'
+   AND column_name = 'fraction_id'
+GO
+
+
+
