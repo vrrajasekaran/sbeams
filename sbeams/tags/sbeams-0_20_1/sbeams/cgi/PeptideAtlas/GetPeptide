@@ -1,0 +1,634 @@
+#!/usr/local/bin/perl
+
+###############################################################################
+# Program     : GetPeptide
+# $Id$
+#
+# Description : Prints summary of a given peptide given selection
+#               atlas build, and peptide name or sequence.
+#
+# SBEAMS is Copyright (C) 2000-2005 Institute for Systems Biology
+# This program is governed by the terms of the GNU General Public License (GPL)
+# version 2 as published by the Free Software Foundation.  It is provided
+# WITHOUT ANY WARRANTY.  See the full description of GPL terms in the
+# LICENSE file distributed with this software.
+#
+###############################################################################
+
+
+###############################################################################
+# Set up all needed modules and objects
+###############################################################################
+use strict;
+use Getopt::Long;
+use FindBin;
+
+use lib "$FindBin::Bin/../../lib/perl";
+use vars qw ($sbeams $sbeamsMOD $q $current_contact_id $current_username
+             $PROG_NAME $USAGE %OPTIONS $QUIET $VERBOSE $DEBUG $DATABASE
+             $TABLE_NAME $PROGRAM_FILE_NAME $CATEGORY $DB_TABLE_NAME
+             @MENU_OPTIONS);
+##use CGI::Carp qw(fatalsToBrowser croak);
+
+use SBEAMS::Connection qw($q);
+use SBEAMS::Connection::Settings;
+use SBEAMS::Connection::Tables;
+use SBEAMS::Connection::TabMenu;
+
+use SBEAMS::PeptideAtlas;
+use SBEAMS::PeptideAtlas::Settings;
+use SBEAMS::PeptideAtlas::Tables;
+
+$sbeams = new SBEAMS::Connection;
+$sbeamsMOD = new SBEAMS::PeptideAtlas;
+$sbeamsMOD->setSBEAMS($sbeams);
+$sbeams->setSBEAMS_SUBDIR($SBEAMS_SUBDIR);
+
+#$q = new CGI;
+
+
+###############################################################################
+# Set program name and usage banner for command like use
+###############################################################################
+$PROG_NAME = $FindBin::Script;
+$USAGE = <<EOU;
+Usage: $PROG_NAME [OPTIONS] key=value key=value ...
+Options:
+  --verbose n         Set verbosity level.  default is 0
+  --quiet             Set flag to print nothing at all except errors
+  --debug n           Set debug flag
+
+ e.g.:  $PROG_NAME [OPTIONS] [keyword=value],...
+
+EOU
+
+#### Process options
+unless (GetOptions(\%OPTIONS,"verbose:s","quiet","debug:s")) {
+  print "$USAGE";
+  exit;
+}
+
+$VERBOSE = $OPTIONS{"verbose"} || 0;
+$QUIET = $OPTIONS{"quiet"} || 0;
+$DEBUG = $OPTIONS{"debug"} || 0;
+
+if ($DEBUG) {
+  print "Options settings:\n";
+  print "  VERBOSE = $VERBOSE\n";
+  print "  QUIET = $QUIET\n";
+  print "  DEBUG = $DEBUG\n";
+}
+
+
+###############################################################################
+# Set Global Variables and execute main()
+###############################################################################
+main();
+exit(0);
+
+
+###############################################################################
+# Main Program:
+#
+# Call $sbeams->Authenticate() and exit if it fails or continue if it works.
+###############################################################################
+sub main {
+
+    #### Do the SBEAMS authentication and exit if a username is not returned
+    exit unless ($current_username = $sbeams->Authenticate(
+        permitted_work_groups_ref=>['PeptideAtlas_user','PeptideAtlas_admin',
+        'PeptideAtlas_readonly'],
+        #connect_read_only=>1,
+        allow_anonymous_access=>1,
+    ));
+
+    #### Read in the default input parameters
+    my %parameters;
+    my $n_params_found = $sbeams->parse_input_parameters(
+        q=>$q,
+        parameters_ref=>\%parameters
+        );
+
+
+    ## If no parameters are defined, set up some defaults to help with browsing
+    ## until I get a help menu set-up
+    if ( !$parameters{'searchWithinThis'}  && !$parameters{'searchForThis'}
+         && (  !$parameters{'atlas_build_name'}  || !$parameters{'atlas_build_id'} ) ) {
+
+        $parameters{'atlas_build_name'} = "Human_P0.9_Ens26_NCBI35";
+
+        $parameters{'searchWithinThis'} = "Peptide Name";
+
+        $parameters{'searchForThis'} = "PAp00000001";
+
+    }
+
+
+    ## get project_id to send to HTMLPrinter display
+    my $project_id = $sbeamsMOD->getProjectID(
+        atlas_build_name => $parameters{'atlas_build_name'},
+        atlas_build_id => $parameters{'atlas_build_id'}
+        );
+
+
+    #### Process generic "state" parameters before we start
+    $sbeams->processStandardParameters(parameters_ref=>\%parameters);
+    #$sbeams->printDebuggingInfo($q);
+
+    #### Decide what action to take based on information so far
+    if ($parameters{'action'} eq "???") {
+
+        # Some action
+
+    } else {
+
+        $sbeamsMOD->display_page_header(project_id => $project_id);
+
+        handle_request(ref_parameters=>\%parameters);
+
+        $sbeamsMOD->display_page_footer();
+
+    }
+
+
+} # end main
+
+
+###############################################################################
+# Handle Request
+###############################################################################
+sub handle_request {
+
+    my %args = @_;
+
+    #### Process the arguments list
+    my $ref_parameters = $args{'ref_parameters'}
+        || die "ref_parameters not passed";
+
+    my %parameters = %{$ref_parameters};
+
+    print <<"    END";
+        <BR>
+    END
+
+    my ($atlas_build_name, $atlas_build_id);
+
+
+    ## if have atlas_build_name, but no id, get the id:
+    if ( (exists $parameters{'atlas_build_name'}) && (!exists $parameters{'atlas_build_id'}))
+    {
+        $atlas_build_name = $parameters{'atlas_build_name'};
+
+        my $sql = qq~
+            SELECT atlas_build_id
+            FROM $TBAT_ATLAS_BUILD
+            WHERE atlas_build_name = '$atlas_build_name'
+            AND record_status != 'D'
+            ~;
+
+        #$sbeams->display_sql(sql=>$sql);
+
+        my ($tmp) = $sbeams->selectOneColumn($sql) or
+            die "Cannot complete $sql ($!)";
+
+        $parameters{'atlas_build_id'} = $tmp;
+
+        $atlas_build_id = $tmp;
+
+    }
+
+
+    ## if have atlas_build_id, but no name, get the name
+    if ( (exists $parameters{'atlas_build_id'})  && (!exists $parameters{'atlas_build_name'}) )
+    {
+        $atlas_build_id = $parameters{'atlas_build_id'};
+
+        my $sql = qq~
+            SELECT atlas_build_name
+            FROM $TBAT_ATLAS_BUILD
+            WHERE atlas_build_id = '$atlas_build_id'
+            AND record_status != 'D'
+            ~;
+
+#       $sbeams->display_sql(sql=>$sql);
+
+        my ($tmp) = $sbeams->selectOneColumn($sql) or
+            die "Cannot complete $sql ($!)";
+
+        $atlas_build_name = $tmp;
+
+        $parameters{'atlas_build_name'} = $atlas_build_name;
+
+    }
+
+
+    ## if tab menu is requested, display tabs and append parameters to PROG_NAME
+#   if ( $parameters{_tab} )  
+#   {
+        my $parameters_string = $sbeamsMOD->printTabMenu( 
+            parameters_ref => \%parameters, 
+            program_name => $PROG_NAME,
+            );
+
+        #print "<BR>parameters_string:$parameters_string<BR>";
+
+        $PROG_NAME = $PROG_NAME.$parameters_string;
+#   }
+
+
+    #### Define some generic variables
+    my ($i,$element,$key,$value,$line,$result,$sql);
+
+    #### Define some variables for a query and resultset
+    my %resultset = ();
+    my $resultset_ref = \%resultset;
+    my (%url_cols,%hidden_cols,%max_widths,$show_sql);
+
+    #### Read in the standard form values
+    my $apply_action  = $parameters{'action'} || $parameters{'apply_action'};
+
+    my $TABLE_NAME = $parameters{'QUERY_NAME'};
+
+
+
+    #### Set some specific settings for this program
+    my $CATEGORY="Get Peptide";
+    my $PROGRAM_FILE_NAME = $PROG_NAME;
+    my $base_url = "$CGI_BASE_DIR/$SBEAMS_SUBDIR/$PROGRAM_FILE_NAME";
+    my $help_url = "$CGI_BASE_DIR/help_popup.cgi";
+
+
+    ## Get and store list of atlases for use with form:  
+    my (@atlas_option_id_array, @atlas_option_name_array);  
+
+    my @accessible_project_ids = $sbeams->getAccessibleProjects();
+    my $project_string = join( ",", @accessible_project_ids ) || '0';
+
+
+    ## get accessible atlases:
+    my $sql = qq~
+        SELECT atlas_build_id,atlas_build_name
+        FROM $TBAT_ATLAS_BUILD
+        WHERE project_id IN ( $project_string )
+        AND record_status!='D'
+    ~;
+
+    my @rows = $sbeams->selectSeveralColumns($sql) or
+        die "Cannot complete $sql ($!)";
+
+    foreach my $row (@rows) {
+
+        my ($tmp_id, $tmp_name) = @{$row};
+
+        unshift(@atlas_option_id_array, $tmp_id);
+        unshift(@atlas_option_name_array, $tmp_name);
+    
+    }
+
+
+
+    #### Build search options for textbox:
+    my @peptide_search_constraint = ( "peptide_name_constraint", 
+                                      "peptide_sequence_constraint"
+    );
+
+    my @textbox_option_tags = ( "Peptide Name", 
+                                "Peptide Sequence"
+    );
+
+
+    #### Apply any parameter adjustment logic
+    $parameters{display_options} = 'ShowSQL';
+
+    my ($selected_atlas_build_name, $selected_key, $selected_key_search);
+
+
+    ## Display HTML FORM to select Atlas and Search constraints:
+    my $atlas_build_name = $parameters{atlas_build_name};
+
+    my $searchKey = $parameters{searchWithinThis};
+
+    my $searchValue = $parameters{searchForThis};
+
+    unless ( $apply_action eq "QUERY" ) { ## if receive from link, don't assign null
+
+        $apply_action = $parameters{"query"};
+
+    }
+
+    ### if receive $parameters{atlas_build_id} from link, get atlas build name 
+    #if ( $parameters{atlas_build_id} ) {
+    #    for (my $i=0; $i<=$#atlas_option_id_array; $i++) {
+    #        if ( $parameters{atlas_build_id} eq $atlas_option_id_array[$i] ) {
+    #            $atlas_build_name = $atlas_option_name_array[$i]
+    #        }
+    #    }
+    #}
+
+
+
+    if ($sbeams->output_mode() eq 'html') {
+
+
+        print "<p>";
+
+        print "<nobr>";
+        print $q->start_form(-method=>"POST",
+                              -action=>"$base_url",
+                             );
+        print $q->popup_menu(-name=> "atlas_build_name",
+                              -values=> [@atlas_option_name_array],
+                              -default=>$atlas_build_name,
+            );
+        print "&nbsp;&nbsp;Search&nbsp;";
+        print $q->popup_menu(-name=> "searchWithinThis",
+                             -values=> [@textbox_option_tags],
+                             -default=>$searchKey,
+            );
+        print "&nbsp;for:&nbsp;";
+        print $q->textfield( "searchForThis", $selected_key_search);
+        print $q->submit(-name => "query", 
+                         -value => 'QUERY',
+                         -label => 'QUERY');
+        print $q->endform;
+        print "</nobr>";
+
+        ## xxxx $help_url
+
+        print "</p>";
+    } 
+
+    ## store form values in %parameters:
+    for (my $i=0; $i<=$#atlas_option_name_array; $i++){
+
+        if ( $atlas_build_name eq $atlas_option_name_array[$i]) {
+
+             $parameters{atlas_build_name} = $atlas_build_name;
+
+             $parameters{atlas_build_id} = $atlas_option_id_array[$i];
+
+        }
+    }
+
+
+    for (my $i=0; $i<=$#textbox_option_tags;$i++){
+
+        if ( $searchKey eq $textbox_option_tags[$i]) {
+
+             $parameters{$peptide_search_constraint[$i]} = $searchValue;
+        }
+    }
+
+
+
+    #########################################################################
+    #### Process all the constraints
+
+    #### If atlas_build_id was not selected, stop here
+    unless ($parameters{atlas_build_name}) {
+        $sbeams->reportException(
+            state => 'ERROR',
+            type => 'INSUFFICIENT CONSTRAINTS',
+            message => 'You must select an Atlas Build',
+        );
+        return;
+    }
+
+
+    #### Build ATLAS_BUILD constraint
+    my $atlas_build_clause = $sbeams->parseConstraint2SQL(
+        constraint_column=>"AB.atlas_build_id",
+        constraint_type=>"int_list",
+        constraint_name=>"Atlas Build",
+        constraint_value=>$parameters{atlas_build_id} );
+    return if ($atlas_build_clause eq '-1');
+
+
+    #### Build PEPTIDE_NAME constraint
+    my $peptide_name_clause = $sbeams->parseConstraint2SQL(
+        constraint_column=>"P.peptide_accession",
+        constraint_type=>"plain_text",
+        constraint_name=>"Peptide Name",
+        constraint_value=>$parameters{peptide_name_constraint} );
+    return if ($peptide_name_clause eq '-1');
+
+
+
+    #### Build PEPTIDE_SEQUENCE constraint
+    my $peptide_sequence_clause = $sbeams->parseConstraint2SQL(
+        constraint_column=>"P.peptide_sequence",
+        constraint_type=>"plain_text",
+        constraint_name=>"Peptide Sequence",
+        constraint_value=>$parameters{peptide_sequence_constraint} );
+    return if ($peptide_sequence_clause eq '-1');
+
+
+    ## want to replace LIKE with = , as want a single peptide returned
+    $peptide_name_clause =~ s/LIKE/=/gi;
+    #print "peptide_name_clause: $peptide_name_clause <br>";
+
+    $peptide_sequence_clause =~ s/LIKE/=/gi;
+    #print "peptide_sequence_clause: $peptide_sequence_clause <br>";
+
+
+    #### Define the SQL statement
+    $sql = qq~
+         SELECT 
+         P.peptide_accession, P.peptide_sequence,
+         PI.best_probability, PI.n_observations, PI.n_genome_locations, PI.n_protein_mappings,
+         PM.chromosome, PM.start_in_chromosome, PM.end_in_chromosome, PM.strand,
+         BS.biosequence_name,
+         PS.sample_tag, PS.sample_title
+
+         FROM $TBAT_PEPTIDE_INSTANCE PI
+
+         INNER JOIN $TBAT_PEPTIDE P
+         ON ( PI.peptide_id = P.peptide_id )
+
+         INNER JOIN $TBAT_PEPTIDE_INSTANCE_SAMPLE PIS
+         ON ( PI.peptide_instance_id = PIS.peptide_instance_id )
+
+         INNER JOIN $TBAT_SAMPLE PS
+         ON ( PIS.sample_id = PS.sample_id )
+
+         INNER JOIN $TBAT_ATLAS_BUILD AB
+         ON ( PI.atlas_build_id = AB.atlas_build_id )
+
+         LEFT JOIN $TBAT_BIOSEQUENCE_SET BSS
+         ON ( AB.biosequence_set_id = BSS.biosequence_set_id )
+
+         LEFT JOIN $TB_ORGANISM O
+         ON ( BSS.organism_id = O.organism_id )
+
+         LEFT JOIN $TBAT_PEPTIDE_MAPPING PM
+         ON ( PI.peptide_instance_id = PM.peptide_instance_id )
+
+         LEFT JOIN $TBAT_BIOSEQUENCE BS
+         ON ( PM.matched_biosequence_id = BS.biosequence_id )
+
+         LEFT JOIN $TB_DBXREF DBX ON ( BS.dbxref_id = DBX.dbxref_id )
+
+         WHERE 1 = 1
+            $atlas_build_clause
+            $peptide_name_clause
+            $peptide_sequence_clause
+
+        ORDER BY P.peptide_accession
+    ~;
+    #$sbeams->display_sql(sql=>$sql);
+
+
+    #########################################################################
+    #### If QUERY,  display the data
+    if ($apply_action =~ /QUERY/i ) {
+
+        my @rows = $sbeams->selectSeveralColumns($sql)
+        or print "Peptide not found.  Please check selections and try again.<br>";
+
+        if (@rows) {
+
+            my (@peptide_accession, @peptide_sequence);
+            my (@best_probability, @n_observations, @n_genome_locations, @n_protein_mappings);
+            my (@chrom, @start_chrom, @end_chrom, @strand);
+            my (@biosequence_name);
+            my (@sample_tag, @sample_title);
+            my %chrom_HoHoHoHoA;
+            my %sample_H;
+
+            my $i=0;  ##index counter
+
+            foreach my $row (@rows) {
+
+                ($peptide_accession[$i], $peptide_sequence[$i],
+                $best_probability[$i], $n_observations[$i], $n_genome_locations[$i], $n_protein_mappings[$i],
+                $chrom[$i], $start_chrom[$i], $end_chrom[$i], $strand[$i],
+                $biosequence_name[$i],
+                $sample_tag[$i], $sample_title[$i]) = @{$row};
+
+                ###  store value as array, array = $biosequence_names
+                if ($chrom_HoHoHoHoA{$chrom[$i]}{$start_chrom[$i]}{$end_chrom[$i]}{$strand[$i]} eq "" ) {
+
+                    $chrom_HoHoHoHoA{$chrom[$i]}{$start_chrom[$i]}{$end_chrom[$i]}{$strand[$i]}[0] = $i;
+
+                } else {
+
+                    push @{ $chrom_HoHoHoHoA{$chrom[$i]}{$start_chrom[$i]}{$end_chrom[$i]}{$strand[$i]} }, $i;
+                }
+
+                $sample_H{$sample_tag[$i]} = $i;
+
+                #print "sql returns: $n_observations[$i] $sample_tag[$i] <br>";
+
+                $i++;
+            }
+            
+            ##xxxx PRINT RETURN to HTML HERE... 
+
+            ## Tan section:
+            my $prnt = "<DIV ID='Section1' DIR='LTR' STYLE='background: #ffcc99'>
+	         <P>
+                 <BR>
+                 &nbsp;&nbsp;&nbsp;<B>Peptide Accession:</B>&nbsp;&nbsp;&nbsp; 
+                     $peptide_accession[0] &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
+                 &nbsp;&nbsp;&nbsp;<B>Peptide Sequence:</B>&nbsp;&nbsp;&nbsp; 
+                     $peptide_sequence[0] <br>
+                 <HR>
+                 <BR>
+                 &nbsp;&nbsp;&nbsp;<B>Best Probability:</B>&nbsp;&nbsp;&nbsp;
+                     $best_probability[0] <br>
+                 &nbsp;&nbsp;&nbsp;<B>Number of Times Observed: </B>&nbsp;&nbsp;&nbsp;
+                     $n_observations[0]  <br>
+                 &nbsp;&nbsp;&nbsp;<B>Molecular Weight:</B>&nbsp;&nbsp;&nbsp;
+                                         <br>
+                 &nbsp;&nbsp;&nbsp;<B>pI: </B>&nbsp;&nbsp;&nbsp;
+                                         <br>
+                 <BR>
+                 </P>
+                 </DIV>";
+            print $prnt;
+
+            
+            ## Yellow section:
+            print "<DIV ID='Section2' DIR='LTR' STYLE='background: #ffffcc'>";
+            $prnt = "<BR>&nbsp;&nbsp;&nbsp;<B>Genome Mappings:</B>&nbsp;&nbsp;&nbsp; 
+                     $n_genome_locations[0] <BR><HR>";
+            print $prnt;
+
+            foreach my $tmp_chrom ( keys %chrom_HoHoHoHoA) {
+
+                print "&nbsp;&nbsp;&nbsp;&nbsp;";
+                print "Chromosome $tmp_chrom : <BR>";
+                my %tmp_hash;
+
+                foreach my $tmp_start ( keys %{$chrom_HoHoHoHoA{$tmp_chrom}}  ) {
+
+                    foreach my $tmp_end ( keys %{$chrom_HoHoHoHoA{$tmp_chrom}{$tmp_start}}  ) {
+
+                        foreach my $tmp_strand ( keys %{$chrom_HoHoHoHoA{$tmp_chrom}{$tmp_start}{$tmp_end}}  ) {
+
+                            print "&nbsp;&nbsp;&nbsp;&nbsp;";
+                            print "&nbsp;&nbsp;&nbsp;&nbsp;";
+                            print "exon:&nbsp;&nbsp;$tmp_start - $tmp_end";
+                            print "&nbsp;&nbsp;&nbsp;&nbsp;strand: &nbsp;&nbsp;$tmp_strand<BR>";
+                            my @tmp_indices=@{$chrom_HoHoHoHoA{$tmp_chrom}{$tmp_start}{$tmp_end}{$tmp_strand}};
+                            for (my $j=0; $j<=$#tmp_indices; $j++){
+                                my $i = $tmp_indices[$j];
+                                $tmp_hash{$biosequence_name[$i]} = $biosequence_name[$i];
+                            }
+                            print "<BR>";
+
+                        }
+                    }
+                }
+                print "&nbsp;&nbsp;&nbsp;&nbsp;";
+                print "&nbsp;&nbsp;&nbsp;&nbsp;";
+                print "Proteins:&nbsp;&nbsp;&nbsp;";
+                foreach my $k ( keys %tmp_hash) {
+                    print "<A HREF=\"$CGI_BASE_DIR/PeptideAtlas/GetProtein?atlas_build_id=$parameters{atlas_build_id}&protein_name=$k&action=QUERY\">$k</A> &nbsp;&nbsp;&nbsp;";
+                } 
+                print "<BR><BR>";
+            }
+            print "</DIV>";
+
+
+            print "<BR>";
+            
+
+            ## Pale Green section:
+            print "<DIV ID='Section3' DIR='LTR' STYLE='background: #ccffff'>";
+            print "<BR>";
+
+            print "&nbsp;&nbsp;&nbsp;&nbsp;";
+            print "<B>Observed in Samples:</B><BR>";
+            print "<BR>";
+            print "<TABLE border=1>";
+            print "<TH> Sample Tag</TH>";
+            print "<TH> Sample Title</TH>";
+
+            foreach my $k (keys %sample_H ) {
+                my $i = $sample_H{$k};
+                print "<TR><TD>$sample_tag[$i]</TD><TD>$sample_title[$i]</TD></TR>";
+            }
+            print "</TABLE>";
+
+            print "<BR>";
+            print "</DIV>";
+
+        }
+
+    #### If QUERY was not selected, then tell the user to enter some parameters
+    } else {
+
+        if ($sbeams->invocation_mode() eq 'http') {
+
+            print "<H4>Select parameters above and press QUERY</H4>\n";
+
+        } else {
+
+            print "You need to supply some parameters to contrain the query\n";
+
+        }
+
+    }
+
+} # end handle_request
