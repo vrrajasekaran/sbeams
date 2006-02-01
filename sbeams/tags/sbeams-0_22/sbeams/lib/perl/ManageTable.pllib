@@ -1,0 +1,3132 @@
+#!/perl
+
+###############################################################################
+# Program     : ManageTable.pllib
+# Author      : Eric Deutsch <edeutsch@systemsbiology.org>
+# $Id$
+#
+# Description : This is a common code section for the ManageTable scripts
+#               Why isn't this in SBEAMS::Core ??
+#
+# SBEAMS is Copyright (C) 2000-2005 Institute for Systems Biology
+# This program is governed by the terms of the GNU General Public License (GPL)
+# version 2 as published by the Free Software Foundation.  It is provided
+# WITHOUT ANY WARRANTY.  See the full description of GPL terms in the
+# LICENSE file distributed with this software.
+#
+###############################################################################
+
+use strict;
+
+# These constants map loosely to the access privilege levels, but there are 
+# only three: READ, WRITE, and MODIFY, in ascending permissions.
+use constant DATA_ADMIN => 10;
+use constant DATA_MODIFIER => 20;
+use constant DATA_WRITER => 30;
+use constant DATA_READER => 40;
+use constant DATA_NONE => 50;
+use constant DEBUG => 0;
+
+use lib ".";
+use SBEAMS::Connection qw($log);
+
+
+###############################################################################
+# Print Options Page
+###############################################################################
+sub printOptions {
+  my %args = @_;
+
+  #### Process the arguments list
+
+
+  #### Print the current user context information
+  $sbeams->printUserContext();
+
+  #### Read in the default input parameters
+  my %parameters;
+  my $n_params_found = $sbeams->parse_input_parameters(
+    q=>$q,parameters_ref=>\%parameters);
+
+  #### If we're in HTML mode, print a list of option links for the user
+  if ($sbeams->output_mode() eq 'html') {
+    print qq~
+	<BR>
+	<H2>$DBTITLE $CATEGORY Maintenance</H2>
+	$LINESEPARATOR
+    ~;
+
+    #### Loop over all the menu options, printing them
+    for (my $option=0; $option<$#MENU_OPTIONS; $option+=2) {
+      my $optionLink = '';
+
+      if ( $option == 0 && !$sbeams->isTableWritable(table_name => $parameters{TABLE_NAME}) ) {
+        $optionLink = $sbeams->makeInactiveText( $MENU_OPTIONS[$option] );
+      } else {
+        $optionLink =<<"        END";
+        <A HREF="@MENU_OPTIONS[$option+1]">@MENU_OPTIONS[$option]</A>
+        END
+      }
+      
+      print qq~
+	$OPTIONARROW
+  $optionLink
+      ~;
+    }
+
+    print "$LINESEPARATOR";
+
+  }
+
+
+  #### Close the upper portion of the page and get ready for data table
+  #$sbeamsMOD->printPageFooter(close_table=>"YES",display_footer=>"NO");
+
+  #### Display the data table
+  showTable(with_options=>'YES',parameters_ref=>\%parameters);
+
+  #### Close the upper portion of the page and get ready for data table
+  $sbeamsMOD->printPageFooter(close_table=>"YES",display_footer=>"NO");
+
+
+} # end printOptions
+
+
+
+###############################################################################
+# Print Entry Form
+###############################################################################
+sub printEntryForm {
+  my %args = @_;
+
+  #### Process the arguments list
+  #### Define popular variables
+  my ($i,$element,$key,$value,$line,$result,$sql);
+  my ($username,$row);
+
+
+  #### Get the columns for this table
+  my @columns = $sbeamsMOD->returnTableInfo($TABLE_NAME,"ordered_columns");
+  my %input_types = $sbeamsMOD->returnTableInfo($TABLE_NAME,"input_types");
+  my $base_url = "$CGI_BASE_DIR/$SBEAMS_SUBDIR/$PROGRAM_FILE_NAME";
+
+
+  #### Read the input parameters for each column
+  my %parameters;
+  my $n_params_found = $sbeams->parse_input_parameters(
+    q=>$q,parameters_ref=>\%parameters,
+    columns_ref=>\@columns,input_types_ref=>\%input_types);
+
+
+  #### Get the action values that triggered this
+  my $apply_action = $q->param('apply_action') || $q->param('action');
+  my $apply_action_hidden  = $q->param('apply_action_hidden');
+  if ($apply_action_hidden gt "") { $apply_action = $apply_action_hidden; }
+
+  # Special case parameter, user can write table but not modify record, and 
+  # has chosen to insert with record as a template.
+  my $second_pass_insert  = $q->param('insert_with_template');
+
+  #### If the action was to SET FIELDS TO THIS TEMPLATE, then try
+  if ($apply_action eq "SET FIELDS TO THIS TEMPLATE") {
+    if (defined($parameters{selected_template}) &&
+        $parameters{selected_template}) {
+      my %new_parameters = getTemplateParameters(
+        template_name => $parameters{selected_template},
+        program_file_name => $PROGRAM_FILE_NAME,
+      );
+      $parameters{save_template_as_name} = $parameters{selected_template};
+
+      #### Loop over all the parameters in the template
+      while (my ($key,$value) = each %new_parameters) {
+        #### Never override record_status or the PK
+        next if ($key eq 'record_status' || $key eq $PK_COLUMN_NAME);
+        #### If there's already a value for this parameter
+        if (defined($parameters{$key}) && $parameters{$key} gt '') {
+          #### If the user allowed overrides, then set to the new value
+          if ($parameters{template_overrides_existing_data}) {
+            $parameters{$key} = $value;
+          }
+        #### If it's currently empty, then set it
+        } else {
+          $parameters{$key} = $value;
+        }
+
+      }
+
+    }
+
+
+  #### Else if a specific PK row was referenced and this is not a REFRESH of an
+  #### existing form, then load data from it into the parameters hash,
+  #### being careful about parameters that may also have been submitted to
+  #### override the default values, suitable for an UPDATE if the user chooses
+  } elsif ($parameters{$PK_COLUMN_NAME} gt "" && $apply_action ne "REFRESH") {
+
+    #### Get the list of relevant columns and get the current values in table
+    my $column_list = join(",",@columns);
+    $sql = qq~
+      SELECT $column_list
+        FROM $DB_TABLE_NAME
+       WHERE $PK_COLUMN_NAME='$parameters{$PK_COLUMN_NAME}'
+    ~;
+    my @rows = $sbeams->selectSeveralColumns($sql);
+
+    # Found cases where this throws an error, next stmt throws perl error.
+    if ( !scalar @rows ) { 
+
+    print STDERR "SQL stmt yeilds no rows: \n $sql \n";
+
+    # Print page with error message
+    my $err = 'The record specified in the url was not found in the database.'; 
+
+    # Add fields group/project choosers need
+    print qq!
+    <INPUT TYPE="hidden" NAME="set_current_work_group" VALUE="">
+    <INPUT TYPE="hidden" NAME="set_current_project_id" VALUE="">
+    <INPUT TYPE=hidden NAME=TABLE_NAME VALUE=$TABLE_NAME>
+    </TR></TABLE></FORM>
+    !;
+    print qq!
+    <INPUT TYPE=hidden NAME=$PK_COLUMN_NAME VALUE=$parameters{$PK_COLUMN_NAME}>
+    ! if $parameters{$PK_COLUMN_NAME};
+
+    $sbeams->displaySBEAMSError( [$err], 1 );
+    return;
+    }
+
+    my @row = @{$rows[0]};
+    
+
+    #### See if the submitter specified how to resolve conflicts
+    my $merge_params = $parameters{merge_params} || 'retain';
+
+    #### Loop over each of the columns, possibly using these values
+    for ($element=0; $element<scalar(@row); $element++) {
+      my $table_value = @row[$element];
+      my $submitted_value = $parameters{@columns[$element]};
+
+      #### If there's a value that was submitted to this program
+      if (defined($submitted_value)) {
+
+	#### If both the same, fine
+	if ($submitted_value eq $table_value) {
+	  #print "$columns[$element]: table and submitted value same<BR>\n";
+
+	#### But if they're different,then do something clever
+	} else {
+	  print "parameter $columns[$element]: table_value='$table_value' ".
+	    "and submitted value '$submitted_value'<BR>\n";
+
+	  #### If replace, then just leave the submitted value
+	  if ($merge_params =~ /replace/i) {
+	    # no action, leave submitted
+
+	  #### If keep, then use the table value
+	  } elsif ($merge_params =~ /keep/i) {
+	    $parameters{$columns[$element]} = $table_value;
+
+	  #### If append, then append submitted value with the supplied
+	  #### delimiter or just use the submitted value if table has nothing
+	  } elsif ($merge_params =~ /append(.*)/i) {
+	    my $delim = $1 || '';
+	    if (defined($table_value) && $table_value gt '') {
+	      $parameters{$columns[$element]} =
+		"$table_value$delim$submitted_value";
+	    } else {
+	      $parameters{$columns[$element]} = $submitted_value;
+	    }
+
+	  }
+
+	}
+
+      #### Otherwise just go ahead and set the parameters to the table value
+      } elsif (defined($table_value)) {
+        $parameters{$columns[$element]} = $table_value;
+      }
+
+    }
+
+  }
+
+
+  #### Obtain information about the current user
+  $current_username = $sbeams->getCurrent_username;
+  $current_contact_id = $sbeams->getCurrent_contact_id;
+  $current_work_group_id = $sbeams->getCurrent_work_group_id;
+  $current_work_group_name = $sbeams->getCurrent_work_group_name;
+  $current_project_id = $sbeams->getCurrent_project_id;
+  $current_project_name = $sbeams->getCurrent_project_name;
+
+
+  #### Execute some special code for the current table
+  preFormHook(parameters_ref=>\%parameters);
+
+
+  #### Query to obtain column information about the table being managed
+  $sql = qq~
+      SELECT column_name,column_title,is_required,input_type,input_length,
+             is_data_column,is_display_column,column_text,
+             optionlist_query,onChange,fk_table,fk_column_name
+        FROM $TB_TABLE_COLUMN
+       WHERE table_name='$TABLE_NAME'
+         AND is_data_column='Y'
+       ORDER BY column_index
+  ~;
+  my @columns_data = $sbeams->selectSeveralColumns($sql);
+
+
+  # First just extract any valid optionlist entries.  This is done
+  # first as opposed to within the loop below so that a single DB connection
+  # can be used.
+  # THIS IS LEGACY AND NO LONGER A USEFUL REASON TO DO SEPARATELY
+  my %optionlist_queries;
+  my $file_upload_flag = "";
+  foreach $row (@columns_data) {
+    my @row = @{$row};
+    my ($column_name,$column_title,$is_required,$input_type,$input_length,
+        $is_data_column,$is_display_column,$column_text,
+        $optionlist_query,$onChange,$fk_table,$fk_column_name) = @row;
+    if ($optionlist_query gt "") {
+      $optionlist_queries{$column_name}=$optionlist_query;
+    }
+
+    # There appears to be a Netscape bug in that one cannot [BACK] to a form
+    # that had multipart encoding.  So, only include form type multipart if
+    # we really have an upload field.  IE users are fine either way.
+    if ($input_type eq "file") {
+      $file_upload_flag = "ENCTYPE=\"multipart/form-data\"";
+    }
+  }
+
+  # Begin read-only context display code.  Fetch auth level for the current user. 
+  # This may be for given table, or for a specific record within that table.  
+  my ( $projectAuthLevel, $tableAuthLevel ); # project and table permissions
+
+  # Fully qualified table name
+#  my $dbtable = getDbTableName( $parameters{TABLE_NAME} );
+   my $dbtable = $sbeams->returnTableInfo( $parameters{TABLE_NAME},
+                                                   'DB_TABLE_NAME' );
+
+
+  # Need this in a few places, calculate here.  Use MOD object, which will call
+  # back to 'parent' module if need be.
+  my $parent_project_id;
+  if ( $parameters{$PK_COLUMN_NAME} ) {
+    $parent_project_id = $sbeamsMOD->getParentProject( 
+                                         table_name => $parameters{TABLE_NAME},
+                                         parameters_ref => \%parameters, 
+                                         action => 'UPDATE' 
+                                                     );
+  }
+  
+  my $groupInfoLink =<<"  END";
+        <A HREF="javascript:openGroupWindow(); document.groupHelp.submit();">
+          Check Privileges
+        </A>
+  END
+
+  # Convenience, define once to pass to checking routines.
+  my %subargs = ( parent_project_id => $parent_project_id,
+                  pk_column_name => $PK_COLUMN_NAME,
+                  pk_value => $parameters{$PK_COLUMN_NAME},
+                  contact_id => $current_contact_id,
+                  dbtable => $dbtable,
+                  table_name => $parameters{TABLE_NAME},
+                  project_id => $current_project_id,
+                  work_group_id => $current_work_group_id 
+                );
+
+  my $workGroupsRef = $sbeams->getTableGroups( %subargs, privilege => 10000 );
+  print getWorkGroupJavascript( $workGroupsRef, $parameters{TABLE_NAME} );
+
+  if ( $parent_project_id ) { # Project security has priority
+    $log->debug ( "Found parent project ID = $parent_project_id" );
+
+    $projectAuthLevel = $sbeams->calculateProjectPermission( %subargs );
+    # check group associations 
+    $log->info( "got permission $projectAuthLevel" );
+
+    my $bestpriv = $sbeams->getBestGroupPermission( $workGroupsRef );
+    if ( $bestpriv <= $projectAuthLevel ) {
+       # $projectAuthLevel = $bestpriv;
+    }
+
+  } else { # Table (Mode 1) Permissions are king
+    
+    # no project permissions, log warning
+    $log->warn( "Viewing data not covered by project permissions" ); 
+
+    $tableAuthLevel = $sbeams->calculateTablePermission( %subargs );
+
+    my $bestpriv = $sbeams->getBestGroupPermission( $workGroupsRef );
+    if ( $bestpriv <= $tableAuthLevel ) {
+      $tableAuthLevel = $bestpriv;
+    }
+  }
+
+  # Prints the group/project selection widgets.
+  $sbeams->printUserContext();
+
+  print qq!
+      <P>
+      <H2>Maintain $CATEGORY</H2>
+      $LINESEPARATOR
+      <FORM METHOD="post" NAME="MainForm" $file_upload_flag>
+      <TABLE BORDER=0>
+  !;
+
+
+  # Translate record and table permissions into sensible options in one place.
+  # Initialize view states hash with 0 (boolean false)
+  my %viewStates;  # Hash of permission states
+  my @errors;  # Array of error messages to display
+
+  for ( qw( no_access read_only insert_new insert_template add_mod_del) ) {
+    $viewStates{$_} = 0;
+  }
+
+# Set auth level to the appropriate value, project takes precedence.
+  my $authLevel = ( $projectAuthLevel ) ? $projectAuthLevel : $tableAuthLevel;
+
+    if ( $authLevel > DATA_READER ) { # User has no priv
+    $viewStates{no_access} = 1;
+    addPrivilegeError( \@errors, $groupInfoLink, $TABLE_NAME );
+
+    # Add some information to help user understand situation.
+    if ( $projectAuthLevel ) {
+      addProjectErrors( \@errors, $authLevel, $parent_project_id );
+    } else {
+      addTableErrors( \@errors, $authLevel );
+    }
+
+  } elsif ( $authLevel > DATA_WRITER ) { # User can read only
+    if ( $parameters{$PK_COLUMN_NAME} ) {
+     $viewStates{read_only} = 1;
+    } else { # Trying an insert, show error page.
+     $viewStates{no_access} = 1;
+     addTableErrors( \@errors, $authLevel );
+     addPrivilegeError( \@errors, $groupInfoLink, $TABLE_NAME );
+     my $obj = ( $projectAuthLevel ) ? 'project' : 'table';
+     push @errors, "You lack authorization to insert records into this $obj."
+    }
+
+  } elsif ( $authLevel <= DATA_MODIFIER ) { # User can add/modify/delete
+    $viewStates{add_mod_del} = 1;
+
+  # To get here, permission must be DATA_WRITER
+  } elsif ( !$parameters{$PK_COLUMN_NAME} ) { # No PK, new insert
+    # Form with insert
+    $viewStates{insert_new} = 1;
+
+  } elsif ( $second_pass_insert  ) { # Second time through, INS from template
+    # Form with insert, template values filled in
+    $viewStates{insert_template} = 1;
+
+  } elsif ( $parameters{$PK_COLUMN_NAME} ) { # PK exists, trying to edit 
+    # read only mode with link to second-pass INSERT (can't edit but can INS)
+    $viewStates{read_insert} = 1;
+
+  } else {
+    # If you're not part of the solution, you're part of the problem!
+    $viewStates{no_access} = 1;
+    my $admin = $sbeams->_getDBAdmin();
+    unshift @errors, <<"    END_ERR";
+    Unknown permissions mode, unable to proceed.  Please<BR>
+    contact your site administrator, $admin, <BR>
+    you feel that this denial was in error.<BR><BR>
+    END_ERR
+  }
+
+
+  #### FIXME debug block ####
+  my $proj = ( defined $projectAuthLevel ) ? $projectAuthLevel : 'undefined';
+  my $pk = ( $parameters{$PK_COLUMN_NAME} ) ? $parameters{$PK_COLUMN_NAME} : 'undefined';
+  my $r = '';
+  for ( keys( %viewStates ) ) {
+    $r = $_ if $viewStates{$_};
+    last if $r;
+  }
+
+  $log->debug( <<"  END_ERR" );
+  Group: $current_work_group_id
+  Table: $tableAuthLevel
+  Project: $proj
+  Auth: $authLevel
+  PK: $pk
+  View: $r
+  END_ERR
+  #### END debug block ####
+
+  # End view-only mode permissions calculation.
+
+  # If resource is denied, reject access here.
+  if ( $viewStates{no_access} ) { 
+
+    # Print page with error message
+    my $admin = $sbeams->_getDBAdmin();
+    push @errors, <<"    END_ERR";
+    Please contact your site 
+    administrator, $admin, if you feel that this denial was in error.
+    END_ERR
+
+    # Add fields group/project choosers need
+    print qq!
+    <INPUT TYPE="hidden" NAME="ShowEntryForm" VALUE="1">
+    <INPUT TYPE="hidden" NAME="set_current_work_group" VALUE="">
+    <INPUT TYPE="hidden" NAME="set_current_project_id" VALUE="">
+    <INPUT TYPE=hidden NAME=TABLE_NAME VALUE=$TABLE_NAME>
+    </TR></TABLE>
+    !;
+    print qq!
+    <INPUT TYPE=hidden NAME=$PK_COLUMN_NAME VALUE=$parameters{$PK_COLUMN_NAME}>
+    ! if $parameters{$PK_COLUMN_NAME};
+    print "</FORM>";
+    $sbeams->displayPermissionToPageDenied( \@errors, 1 );
+    return;
+  }
+ 
+
+  # ---------------------------
+  # Build option lists for each optionlist query provided for this table
+  my %optionlists;
+  my $accessible_project_id_list = '';
+  my $writable_project_ids = '';
+
+  foreach $element (keys %optionlist_queries) {
+
+      # If "$contact_id" appears in the SQL optionlist query, then substitute
+      # that with either a value of $parameters{contact_id} if it is not
+      # empty, or otherwise replace with the $current_contact_id
+      if ( $optionlist_queries{$element} =~ /\$contact_id/ ) {
+        if ( $parameters{"contact_id"} eq "" ) {
+          $optionlist_queries{$element} =~
+              s/\$contact_id/$current_contact_id/g;
+        } else {
+          $optionlist_queries{$element} =~
+              s/\$contact_id/$parameters{contact_id}/g;
+        }
+      }
+
+      # If "$accessible_project_ids" appears in the SQL optionlist query,
+      # then substitute it with a call to that function
+      if ( $optionlist_queries{$element} =~ /\$accessible_project_ids/ ) {
+        my @accessible_project_ids = $sbeams->getAccessibleProjects();
+      	$accessible_project_id_list = join(',',@accessible_project_ids);
+      	$accessible_project_id_list ||= '-1';
+        $optionlist_queries{$element} =~
+          s/\$accessible_project_ids/$accessible_project_id_list/g;
+      }
+
+      # Ditto for "$writable_project_ids" 
+      if ( $optionlist_queries{$element} =~ /\$writable_project_ids/ ) {
+        my @writable_project_ids = $sbeams->getWritableProjects();
+      	$writable_project_ids = join(',',@writable_project_ids) || -1;
+        $optionlist_queries{$element} =~
+          s/\$writable_project_ids/$writable_project_ids/g;
+      }
+
+
+      # If "$project_id" appears in the SQL optionlist query, then substitute
+      # that with either a value of $parameters{project_id} if it is not
+      # empty, or otherwise replace with the $current_project_id
+      if ( $optionlist_queries{$element} =~ /\$project_id/ ) {
+        if ( $parameters{"project_id"} eq "" ) {
+          $optionlist_queries{$element} =~
+              s/\$project_id/$current_project_id/g;
+        } else {
+          $optionlist_queries{$element} =~
+              s/\$project_id/$parameters{project_id}/g;
+        }
+      }
+
+      # If "$parameters{xxx}" appears in the SQL optionlist query,
+      # then substitute that with either a value of $parameters{xxx}
+      while ( $optionlist_queries{$element} =~ /\$parameters\{(\w+)\}/ ) {
+        my $tmp = $parameters{$1};
+        $tmp = "''" unless (defined($tmp) && $tmp gt '');
+        $optionlist_queries{$element} =~
+          s/\$parameters{$1}/$tmp/g;
+      }
+
+
+      #### Evaluate the $TBxxxxx table name variables if in the query
+      if ( $optionlist_queries{$element} =~ /\$TB/ ) {
+        my $tmp = $optionlist_queries{$element};
+        #### If there are any double quotes, need to escape them first
+        $tmp =~ s/\"/\\\"/g;
+        my $nonNULL = 0;
+        $nonNULL = 1 if ($tmp);
+        $optionlist_queries{$element} = eval "\"$tmp\"";
+        if ($nonNULL && !($optionlist_queries{$element})) {
+          print "WARNING: eval failed for =$tmp=. ".
+            "Please report this problem<BR>\n";
+	}
+      }
+
+      #### Set the MULTIOPTIONLIST flag if this is a multi-select list
+      my $method_options;
+      $method_options = "MULTIOPTIONLIST"
+        if ($input_types{$element} eq "multioptionlist" ||
+            $input_types{$element} eq "multilink");
+
+      # Build the option list
+      if ($input_types{$element} eq "fixedfromlist") {
+        my %templist =
+          $sbeams->selectTwoColumnHash($optionlist_queries{$element});
+        $optionlists{$element} = $templist{$parameters{$element}};
+      } else {
+        #print "$optionlist_queries{$element}<BR><BR>\n";
+        if ($optionlist_queries{$element}) {
+
+          my $selected_id = $parameters{$element};
+
+          # Special handling if optionlist is being built for a project_id field
+          $selected_id ||= $current_project_id if $element eq 'project_id'; 
+
+          $optionlists{$element}=$sbeams->buildOptionList(
+             $optionlist_queries{$element},
+             $selected_id,
+             $method_options);
+
+	  #### If the user sent some invalid options, reset the list to the
+	  #### valid list.  This is hacky because buildOptionList() API is poor
+	  if ($optionlists{$element} =~ /\<\!\-\-(.*)\-\-\>/) {
+	    $parameters{$element} = $1;
+	  }
+        } else {
+          print "WARNING: empty SQL statement for option list. ".
+            "Please report this problem<BR>\n";
+          $optionlist_queries{$element} = "";
+        }
+
+      }
+  }
+
+  # Add CSS and javascript for popup column_text info (if configured).
+  print $sbeams->getPopupDHTML();
+
+  #### Now loop through again and write the HTML
+  foreach $row (@columns_data) {
+    my @row = @{$row};
+    my $mask_description = 0;
+    my ($column_name,$column_title,$is_required,$input_type,$input_length,
+        $is_data_column,$is_display_column,$column_text,
+        $optionlist_query,$onChange,$fk_table,$fk_column_name) = @row;
+
+    # FIXME 'static conditional' for image link column text
+    # Should/could be replaced by a user-configuration option
+    use constant LINKHELP => 1; 
+    if ( LINKHELP ) {
+    $column_text = linkToColumnText( $column_text, $column_name, $TABLE_NAME );
+    }
+
+    
+    # Determine if (potential) fk table can be managed
+    my $manage;  
+    if ($fk_table) {
+      my ( $infoRef ) = \$sbeamsMOD->returnTableInfo($fk_table, "ManageTableAllowed");
+      $manage = $$infoRef;
+    }
+
+    #### If there is a foreign_key table defined, create some HTML
+    #### to provide a link to it
+    my $jump_to_list_source;
+    if ( $fk_table && $manage eq 'YES' ) {
+      my $subdir = $sbeams->getSBEAMS_SUBDIR();
+      $subdir .= "/" if ($subdir);
+      $jump_to_list_source = qq~
+      <A TARGET="AddToList" HREF="$CGI_BASE_DIR/${subdir}ManageTable.cgi?TABLE_NAME=$fk_table&ShowEntryForm=1">
+      <IMG SRC="$HTML_BASE_DIR/images/greenplus.gif" border=0 ALT="Add to or view details about this list box" ></A>
+      ~;
+
+      $jump_to_list_source .= qq~
+      <A TARGET="ViewProperties" HREF="$CGI_BASE_DIR/${subdir}ManageTable.cgi?TABLE_NAME=$fk_table&$fk_column_name=$parameters{$column_name}">
+      <IMG SRC="$HTML_BASE_DIR/images/xmag_sm.png" border=0 ALT="View properties of the selected item (Click REFRESH after selecting new item)" >
+      </A>
+      ~ if (defined($parameters{$column_name}) && $parameters{$column_name} > '');
+    }
+
+    # For now just handle 'P', come back to N/null/1/2
+    if ( defined $is_display_column && $is_display_column eq 'P' ) {
+      if ( $viewStates{read_only} || $viewStates{read_insert} ) {
+        next;
+      } elsif ( $viewStates{insert_template} ) {
+        # Null out val so it isn't passed on.
+        $parameters{$column_name} = '';
+      }
+    }
+
+    # Begin display block for read-only data.  Render as a simple HTML <TABLE>
+    # instead of as a <FORM>
+    if ( $viewStates{read_insert} || $viewStates{read_only} ) {
+
+
+      # Value of parameter
+      my $text = '';
+      # Different input_types
+      if ( $input_type =~ /optionlist/ ) {
+        my $query = $optionlist_query;
+       
+        # Use parameter set contact if available, else current
+        my $contact_id = ( $parameters{contact_id} ) ? $parameters{contact_id} 
+                                           : $sbeams->getCurrent_contact_id();
+
+        $query =~ s/\"/\\\"/g;
+        $query =~ s/\$accessible_project_ids/$accessible_project_id_list/g;
+        $query = eval "\"$query\"";
+
+        if ( !$query ) { # Can't translate without query
+          print STDERR <<"          END_ERR";
+          Error translating query => $@
+          Pre_interplolation => $optionlist_query
+          Column => $column_name
+          Param => $parameters{$column_name}
+          END_ERR
+        } else {
+
+          $text = $sbeams->translateOptionValue( $query, $parameters{$column_name} );
+        }
+      } elsif ($input_type eq "file") {
+        $text = linkFile( $text ); # No op stub for now...
+        # Calculate size, link to file, etc.
+      } elsif ($input_type eq "password") {
+        # display hash marks 
+      } else {
+        # Can read but not modify the record, and cannot write the table
+        # Handle text fields
+        # 'block' long strings into 80-char chunks
+        $text = $parameters{$column_name};
+        $text = wrapText( $text ) if length($text) > 60;
+        $text = '&nbsp;' if !defined $text || $text eq '';
+      }
+
+      my $view_obj_details;
+      if ( $fk_table && $manage eq 'YES' ) {
+      my $subdir =  ( $sbeams->getSBEAMS_SUBDIR() ) ? $sbeams->getSBEAMS_SUBDIR() . '/' : ''; 
+      $view_obj_details .= qq~
+        <A TARGET="ViewProperties" HREF="$CGI_BASE_DIR/${subdir}ManageTable.cgi?TABLE_NAME=$fk_table&$fk_column_name=$parameters{$column_name}">
+        <IMG SRC="$HTML_BASE_DIR/images/xmag_sm.png" HEIGHT=16 WIDTH=16 border=0 ALT="View properties of the selected item (Click REFRESH after selecting new item)" >
+        </A>
+      ~ if (defined($parameters{$column_name}) && $parameters{$column_name} > '');
+      }
+
+      print <<"      END_PRINT";
+      <TR>
+        <TD VALIGN="top"><B>$column_title:</B></TD>
+        <TD BGCOLOR="E0E0E0">$column_text</TD>
+        <TD VALIGN="top">$text $view_obj_details</TD>
+      <TR>
+      END_PRINT
+
+      next;
+
+    } # End view-only display block
+
+    #### Set the JavaScript onChange string if supplied
+    if ($onChange gt "") {
+      $onChange = " onChange=\"$onChange\"";
+    }
+
+
+    #### Write the parameter name, in red if required
+    if ($is_required eq "N") {
+      print <<"      END"; 
+        <TR><TD><B>$column_title:</B></TD>
+            <TD BGCOLOR="E0E0E0">$column_text</TD>
+      END
+
+    } else {
+      print <<"      END"; 
+        <TR><TD><B><font color=red>$column_title:</font></B></TD>
+            <TD BGCOLOR="E0E0E0">$column_text</TD>
+      END
+    }
+
+
+    #### Escape special characters
+    my $param = $parameters{$column_name};
+    $param =~ s/\"/&quot;/g;
+
+
+    if ($input_type eq "text") {
+      print qq!
+        <TD><INPUT TYPE="$input_type" NAME="$column_name"
+         VALUE="$param" SIZE=$input_length $onChange></TD>
+      !;
+    }
+
+
+    if ($input_type eq "file") {
+      print "<TD>";
+      my $data_file =
+        "$TABLE_NAME/$parameters{$PK_COLUMN_NAME}_$column_name.dat";
+      if ($parameters{$column_name}) {
+        my $file_size = -s "$UPLOAD_DIR/$data_file";
+        my $file_name = $parameters{$column_name};
+        #$file_name =~ s/^.+\///;
+        #### Check for legacy names before original names were stored
+        if ($file_name eq $data_file) {
+          $file_name = 'Original File Name Unknown';
+        }
+        #### If the file is of non-zero length, provide a link to it
+        if ($file_size > 0) {
+          my $url = $base_url;
+          $url =~ s/\?/\/$file_name?/;
+          print "<nowrap>View File: <A HREF=\"$url&".
+            "$PK_COLUMN_NAME=$parameters{$PK_COLUMN_NAME}&".
+            "GetFile=$column_name\">".
+            "$file_name</A> </nowrap><BR>\n";
+        }
+
+      }
+
+      print qq~
+        <INPUT TYPE="$input_type" NAME="$column_name"
+         VALUE="" SIZE=$input_length $onChange>
+        </TD>
+      ~;
+    }
+
+
+    if ($input_type eq "password") {
+
+      # If we just loaded password data from the database, and it's not
+      # a blank field, the replace it with a special entry that we'll
+      # look for and decode when it comes time to UPDATE.
+      if ($parameters{$PK_COLUMN_NAME} gt "" && $apply_action ne "REFRESH") {
+        if ($parameters{$column_name} gt "") {
+          $parameters{$column_name}="**********".$parameters{$column_name};
+        }
+      }
+
+      print qq!
+        <TD><INPUT TYPE="$input_type" NAME="$column_name"
+         VALUE="$parameters{$column_name}" SIZE=$input_length></TD>
+      !;
+    }
+
+
+    if ($input_type eq "fixed") {
+      print qq!
+        <TD><INPUT TYPE="hidden" NAME="$column_name"
+         VALUE="$param">$param</TD>
+      !;
+    }
+
+    if ($input_type eq "textarea") {
+      print qq~
+        <TD COLSPAN=2><TEXTAREA NAME="$column_name" rows=$input_length
+          cols=80>$param</TEXTAREA></TD>
+      ~;
+      $mask_description = 1;
+    }
+
+    if ($input_type eq "textdate") {
+      #if ($parameters{$column_name} eq "") {
+      #  my ($sec,$min,$hour,$mday,$mon,$year) = localtime(time());
+      #  $year+=1900; $mon+=1;
+      #  $parameters{$column_name} = "$year-$mon-$mday $hour:$min";
+      #}
+      print qq!
+        <TD><INPUT TYPE="text" NAME="$column_name"
+         VALUE="$parameters{$column_name}" SIZE=$input_length>
+        <INPUT TYPE="button" NAME="${column_name}_button"
+         VALUE="NOW" onClick="ClickedNowButton($column_name)">
+         </TD>
+      !;
+    }
+
+    if ($input_type eq "optionlist") {
+      print qq!
+        <TD><SELECT NAME="$column_name" $onChange>
+        <OPTION VALUE=""></OPTION>
+        $optionlists{$column_name}</SELECT>&nbsp;$jump_to_list_source</TD>
+      !;
+    }
+
+    if ($input_type eq "scrolloptionlist") {
+      print qq!
+        <TD><SELECT NAME="$column_name" SIZE=$input_length $onChange>
+        <OPTION VALUE=""></OPTION>
+        $optionlists{$column_name}</SELECT>&nbsp;$jump_to_list_source</TD>
+      !;
+    }
+
+    if ($input_type eq "multioptionlist" || $input_type eq "multilink") {
+      print qq!
+        <TD><SELECT NAME="$column_name" MULTIPLE SIZE=$input_length $onChange>
+        $optionlists{$column_name}</SELECT>&nbsp;$jump_to_list_source</TD>
+      !;
+    }
+
+    if ($input_type eq "fixedfromlist") {
+      print qq!
+        <TD><INPUT TYPE="hidden" NAME="$column_name"
+         VALUE="$parameters{$column_name}">
+         $optionlists{$column_name}</TD></TD>
+      !;
+    }
+
+    if ($input_type eq "current_contact_id") {
+      if ($parameters{$column_name} eq "") {
+          $parameters{$column_name}=$current_contact_id;
+          $username=$current_username;
+      } else {
+          if ( $parameters{$column_name} == $current_contact_id) {
+            $username=$current_username;
+          } else {
+            $username=$sbeams->getUsername($parameters{$column_name});
+          }
+      }
+      print qq~
+        <TD><INPUT TYPE="hidden" NAME="$column_name"
+         VALUE="$parameters{$column_name}">$username</TD>
+      ~;
+    }
+
+    print "</TR>\n";
+
+
+  }
+
+
+  #### Allow some additional processing here based on current table
+  postFormHook(parameters_ref=>\%parameters);
+
+  if ( $viewStates{read_insert} || $viewStates{read_only} ) {
+
+    my $status = getStatusForDisplay( $parameters{'record_status'} );
+    print <<"    END_PRINT";
+          <TR><TD><B>record_status:</B></TD>
+          <TD COLSPAN=2>$status</TD>
+          </TR>
+    END_PRINT
+  }
+  else {
+    my $record_status_options = 
+                 $sbeams->getRecordStatusOptions($parameters{"record_status"});
+
+    print qq~
+          <TR><TD><B>record_status:</B></TD>
+          <TD COLSPAN=2><SELECT NAME="record_status">
+              $record_status_options
+              </SELECT></TD>
+          </TR><TR>
+    ~;
+  }
+
+#  Code block to add work_group select list to the page.
+  if ( $viewStates{read_insert} || $viewStates{read_only} ) {
+
+    my $group = getWorkGroupName( $parameters{'owner_group_id'} );
+    print <<"    END_PRINT";
+          <TR><TD NOWRAP><B>Owner Work Group:</B></TD>
+          <TD COLSPAN=2>$group &nbsp; $groupInfoLink</TD>
+          </TR>
+    END_PRINT
+  }
+  else {
+
+    my $wg_options = getWorkGroupOptions( 
+                               group_ref => $workGroupsRef,
+                               owner_group_id =>  $parameters{owner_group_id},
+                               current_group_id =>  $current_work_group_id,
+                               project_based => $parent_project_id 
+                                        );
+
+    print qq~
+          <TR><TD NOWRAP><B>Owner Work Group:</B></TD>
+          <TD COLSPAN=2>
+         $wg_options $groupInfoLink</TD>
+          </TR><TR>
+    ~;
+  }
+
+  # Display 'block' for various FORM buttons.  Options are more numerous now,
+  # Set things up in scalars rather than hard-coded HTML.
+  my $pad = '&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;';
+
+  my $update =<<"  END_UPDATE";
+  <INPUT TYPE=submit NAME=apply_action VALUE=UPDATE> this record with this new data<BR>
+  END_UPDATE
+
+  my $insert =<<"  END_INSERT";
+  <INPUT TYPE=submit NAME=apply_action VALUE=INSERT> 
+  new record(s) with this information (uniqueness will be checked)<BR>
+  END_INSERT
+
+  my $alt_insert =<<"  END_INSERT";
+  <INPUT TYPE=hidden NAME=insert_with_template VALUE=1> 
+  <INPUT TYPE=submit NAME=alt_action VALUE=CREATE> 
+  new record with this information as a template<BR>
+  END_INSERT
+
+  my $refresh =<<"  END_REFRESH";
+  <INPUT TYPE=submit NAME=apply_action VALUE=REFRESH> this form<BR>
+  END_REFRESH
+
+  my $delete =<<"  END_DELETE";
+  <INPUT TYPE=submit NAME=apply_action VALUE=DELETE> this record<BR>
+  END_DELETE
+
+  #### If a specific record was passed, potentially display UPDATE/DELETE options
+  if ($parameters{$PK_COLUMN_NAME} gt "") {
+
+    if ($parameters{date_created}) {
+      my $created_by_username =
+        $sbeams->getUsername($parameters{created_by_id});
+      my $modified_by_username =
+        $sbeams->getUsername($parameters{modified_by_id});
+      my $date_created = $parameters{date_created}; chop($date_created);
+      my $date_modified = $parameters{date_modified}; chop($date_modified);
+      print qq~
+        <TR><TD NOWRAP><B>Record Created:</B></TD>
+        <TD COLSPAN=2>${date_created} by ${created_by_username}</TD></TR>
+      ~;
+      unless ($date_created eq $date_modified) {
+        print qq~
+          <TR><TD NOWRAP><B>Record Modified:</B></TD>
+          <TD COLSPAN=2>${date_modified} by ${modified_by_username}</TD></TR>
+        ~;
+      }
+    }
+
+    my $hidden =<<"    END_HIDDEN";
+    <INPUT TYPE=hidden NAME=TABLE_NAME VALUE=$TABLE_NAME>
+    <INPUT TYPE=hidden NAME=$PK_COLUMN_NAME VALUE=$parameters{$PK_COLUMN_NAME}>
+    END_HIDDEN
+
+  if ( $viewStates{add_mod_del} ) {
+
+      # Can read and write current record (and presumably current table).
+      # Whole ball of wax, UPDATE, DELETE, INSERT, REFRESH, HIDDEN
+      print <<"      END";
+      <TR><TD COLSPAN=3 BGCOLOR='#EEEEFF'>
+      $hidden
+      $pad
+      $update
+      $pad
+      $insert
+      $pad
+      $refresh
+      $pad
+      $delete
+      END
+    } elsif ( $viewStates{insert_template} ) {
+      print <<"      END";
+      <TR><TD COLSPAN=3 BGCOLOR='#EEEEFF'>
+      $hidden
+      $pad
+      $insert
+      $pad
+      END
+      # $refresh doesn't work so well here.
+      
+    } elsif ( $viewStates{read_insert} ) {
+
+      # Can only read current record but can write current table.
+      # Add INSERT, REFRESH, HIDDEN
+      print <<"      END";
+      <TR><TD COLSPAN=3 BGCOLOR='#EEEEFF'>
+      $hidden
+      $pad
+      $alt_insert
+      $pad
+      END
+
+    } elsif ( $viewStates{read_only} ) {
+
+      # Can only read current record and current table.
+      # No buttons to add.
+      print <<"      END";
+      <TR><TD COLSPAN=3 BGCOLOR='#EEEEFF'>
+      $hidden
+      END
+
+    } elsif ( $viewStates{no_access} ) {
+
+      # Caught above, shouldn't be able to get here...
+      die ( 'Unexpected permissions state, please report error' );
+
+    } else {
+
+      # Legacy 
+      print qq!
+       LEGACY
+       <TR><TD COLSPAN=3 BGCOLOR="#EEEEFF">
+       <INPUT TYPE="hidden" NAME="TABLE_NAME" VALUE="$TABLE_NAME">
+       <INPUT TYPE="hidden" NAME="$PK_COLUMN_NAME" VALUE="$parameters{$PK_COLUMN_NAME}">
+       &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
+       <INPUT TYPE="submit" NAME="apply_action" VALUE="UPDATE"> this record with this new data<BR>
+       &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
+       <INPUT TYPE="submit" NAME="apply_action" VALUE="INSERT"> new record(s) with this information (uniqueness will be checked)<BR>
+       &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
+       <INPUT TYPE="submit" NAME="apply_action" VALUE="REFRESH"> this form<BR>
+       &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
+       <INPUT TYPE="submit" NAME="apply_action" VALUE="DELETE"> this record<BR>
+       !;
+    }
+
+
+  #### Otherwise, just allow INSERT or REFRESH
+  # FIXME, bolster logic in this section, oy!
+  } else {
+    my $hidden =<<"    END_HIDDEN";
+    <INPUT TYPE=hidden NAME=TABLE_NAME VALUE=$TABLE_NAME>
+    END_HIDDEN
+
+    if ( $viewStates{read_only} || $viewStates{read_insert} ) {
+
+    # Can only read current record and current table.
+    # No buttons to add.
+    print <<"    END";
+    <TR><TD COLSPAN=3 BGCOLOR='#EEEEFF'>
+    $hidden
+    $pad
+    END
+    }
+
+    elsif ( $viewStates{insert_new} || 
+            $viewStates{insert_template} || 
+            $viewStates{add_mod_del} ) {
+
+    # Can read and write current record and current table.
+    # Whole ball of wax, INSERT, REFRESH, HIDDEN
+    print <<"    END";
+    <TR><TD COLSPAN=3 BGCOLOR='#EEEEFF'>
+    $hidden
+    $pad
+    $insert
+    $pad
+    $refresh
+    END
+    }
+    else { # Legacy 
+      print qq!
+      LEGACY?
+       <TR><TD COLSPAN=3 BGCOLOR="#EEEEFF">
+       <INPUT TYPE="hidden" NAME="TABLE_NAME" VALUE="$TABLE_NAME">
+       &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
+       <INPUT TYPE="submit" NAME="apply_action" VALUE="INSERT"> new record(s) with this information<BR>
+       &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
+       <INPUT TYPE="submit" NAME="apply_action" VALUE="REFRESH"> this form<BR>
+      !;
+    }
+  }
+
+
+  #### Finish the form
+  if ( $viewStates{read_only} || $viewStates{read_insert} ) {
+
+    # We are viewing only
+    print qq!
+    <INPUT TYPE="hidden" NAME="set_current_work_group" VALUE="">
+    <INPUT TYPE="hidden" NAME="set_current_project_id" VALUE="">
+    </TR></TABLE></FORM>
+    !
+  } else {
+    print qq!
+    $pad
+    <INPUT TYPE="reset" VALUE="RESET"> fields to their original values
+    <INPUT TYPE="hidden" NAME="apply_action_hidden" VALUE="">
+    <INPUT TYPE="hidden" NAME="set_current_work_group" VALUE="">
+    <INPUT TYPE="hidden" NAME="set_current_project_id" VALUE="">
+    <BR>
+    !;
+
+    # build template saving select list.
+    my $sql = qq~
+      SELECT template_name,template_name
+        FROM $TB_FORM_TEMPLATE
+       WHERE contact_id = '$current_contact_id'
+         AND program_file_name = '$PROGRAM_FILE_NAME'
+         AND record_status != 'D'
+    ~;
+    my $available_template_options = $sbeams->buildOptionList($sql,$parameters{selected_template});
+
+    # Add template saving block
+    print qq!
+    $pad
+    Store current state of fields as template: 
+    <INPUT TYPE="text" WIDTH=30 NAME="save_template_as_name" VALUE="$parameters{save_template_as_name}">
+    <INPUT TYPE="submit" NAME="apply_action" VALUE="SAVE TEMPLATE">
+    <BR>$pad
+    Existing templates: 
+    <SELECT NAME="selected_template"><OPTION VALUE=""></OPTION>$available_template_options</SELECT>
+    <INPUT TYPE="submit" NAME="apply_action" VALUE="DELETE THIS TEMPLATE">
+    <BR>
+    $pad
+    <INPUT TYPE="submit" NAME="apply_action" VALUE="SET FIELDS TO THIS TEMPLATE">
+    &nbsp;&nbsp;&nbsp;<INPUT TYPE="checkbox" NAME="template_overrides_existing_data"> including non-blank fields
+    </TR></TABLE></FORM>
+    !;
+  }
+
+  $sbeamsMOD->printPageFooter(close_tables=>'YES',display_footer=>'NO');
+
+  if ($current_username ne 'guest') {
+    showTable(with_options=>'',parameters_ref=>\%parameters);
+  }
+
+} # end printEntryForm
+
+
+
+#+
+# Pushes error onto passed array ref
+# -
+sub addTableErrors {
+  my $errors = shift;
+  my $auth = shift;
+  push @$errors, <<"  END_ERR"; 
+  You lack basic ($auth) authorization to access this resource.
+  END_ERR
+}
+
+#+
+# Pushes error onto passed array ref
+# -
+sub addProjectErrors {
+
+  my $errors = shift;
+  my $auth = shift;
+  my $parent_project_id = shift;
+
+  push @$errors, <<"  END_ERR"; 
+  You lack project ($auth) authorization to access this resource.
+  END_ERR
+
+  # Need more project info
+  my @rows = $sbeams->selectSeveralColumns( <<"  END_SQL" );
+  SELECT first_name || ' ' || last_name as uname, project_id, name
+  FROM $TB_PROJECT p JOIN $TB_CONTACT c
+  ON p.pi_contact_id = c.contact_id
+  WHERE p.project_id = $parent_project_id
+  END_SQL
+
+  if ( scalar( @rows ) ) {
+    push @$errors, <<"    END_ERR";
+    You do not have sufficient privileges ($auth) to access data in the
+    current project, $rows[0]->[2] ( $rows[0]->[1] ).  Please contact the the
+    project PI ( $rows[0]->[0] ) about granting you access.
+    END_ERR
+  }
+}
+
+###############################################################################
+# getDbTableName
+#
+# arg table_name
+# ret db_table_name
+#
+# Given a table_name, return name of db object for that item
+###############################################################################
+sub getDbTableName {
+  my $name = shift;
+
+  my $dbname = $sbeams->getDBHandle()->selectrow_array( <<"  END" );
+  SELECT db_table_name
+  FROM $TB_TABLE_PROPERTY
+  WHERE table_name = '$name'
+  END
+
+  print STDERR "Couldn't find table ( $name ) in table_property" if !$dbname;
+
+  return eval "\"$dbname\"";
+  } # End getDbTableName
+
+
+###############################################################################
+# wrapText 
+#
+# arg text string to wrap (required)
+# arg length at which to wrap (optional)
+# 
+# Breaks text into 80-character lines.  Currently assumes HTML display mode,
+# uses <BR> as line separator. 
+###############################################################################
+sub wrapText
+   {
+   my $text = shift;
+   return unless $text || $text == 0;
+   my $len = shift;
+   
+   use Text::Wrap qw( $columns wrap );
+                                                                                
+   # If len not passed, default to 80
+   $columns = ( $len ) ? $len : 80;
+
+   # wrap it up
+   my $wrapped = wrap( '', '', $text );
+
+   # enclose in PRE tags if in HTML mode
+   $wrapped = "<PRE>$wrapped</PRE>"; 
+
+   return $wrapped;
+   } # End wrapText
+
+###############################################################################
+# getStatusForDisplay
+#
+# arg one-character status code
+# 
+###############################################################################
+sub getStatusForDisplay {
+  my $statusCode = shift;
+  return '<I>&nbsp;n/a&nbsp;</I>' if !$statusCode;
+ 
+  if ( $statusCode eq 'N' ){ return 'Normal'; }
+  elsif ( $statusCode eq 'M' ){ return 'Modifiable'; }
+  elsif ( $statusCode eq 'L' ){ return 'Locked'; }
+  elsif ( $statusCode eq 'D' ){ return 'Deleted'; }
+  else { return 'Unknown'; }
+  
+} # End getStatusForDisplay
+
+###############################################################################
+# getWorkGroupOptions
+#
+# narg group_ref         ref to array of group array refs
+# narg owner_group_id    Group that owns current record
+# narg current_group_id  User's current group id
+# narg project_based     Is there a parent project
+# 
+###############################################################################
+sub getWorkGroupOptions {
+  my %args = @_;
+
+  my %perms = $sbeams->getPrivilegeNames();
+
+  for( qw( group_ref ) ) { # Check for required params
+    die ("Missing required parameter $_") unless $args{$_};
+  }
+
+  # Forstall undef error messages.
+  $args{owner_group_id} ||= 0;
+
+  # The default selected group is current owner group else current group.
+  my $selected = ( $args{owner_group_id} ) ?  $args{owner_group_id} : 
+                                              $args{current_group_id}; 
+  
+  my $list = "<SELECT NAME='owner_group_id'>\n";  # Base select list
+  my $seen_current = 0;
+  my $index;
+
+  for my $grp ( @{$args{group_ref}} ) { # Foreach passed group (name, id, priv)
+    $index++;
+
+    $seen_current = $index if $args{owner_group_id} == $grp->[1];
+
+    # Need to have data writer for group to appear
+    next if $$grp[2] >= DATA_READER && $index != $seen_current;
+
+    # Set group val from record (update) or current work group (insert) as SEL
+    my $sel = ( $selected && $selected == $$grp[1] ) ? 'SELECTED' : '';
+    
+    # Add item to select list
+    $list .= "<OPTION $sel VALUE=$$grp[1]>$$grp[0] &nbsp;-&nbsp; ($perms{$$grp[2]})\n";
+  }
+
+  # If there is an owner group, and it wasn't in the user's array, push it on.
+  if ( $args{owner_group_id} && !$seen_current ) {
+    my $name = getWorkGroupName( $args{owner_group_id} );
+    $list .= "<OPTION SELECTED VALUE=$args{owner_group_id}>$name &nbsp;-&nbsp; ($perms{50})\n";
+  }
+
+  $list .= "</SELECT>\n";
+  return $list;
+
+}
+###############################################################################
+# getWorkGroupName
+#
+# arg work_group_id to look up.
+# 
+###############################################################################
+sub getWorkGroupName {
+  my $wg_id = shift;
+  return undef unless $wg_id;
+
+  die ("Illegal group id: $wg_id") if $wg_id !~ /^\d+$/;
+  
+  my ($name) = $sbeams->selectOneColumn( <<"  END_SQL" );
+  SELECT work_group_name
+  FROM $TB_WORK_GROUP 
+  WHERE work_group_id = $wg_id
+  END_SQL
+
+  $log->debug( "Owner group name was: $name" );
+
+  return $name;
+
+} # End getWorkGroupName
+
+###############################################################################
+# linkToColumnText: Creates link to popup window with column info text inside
+#
+# arg column text for display in popup window
+# arg column name
+# arg table name
+# 
+###############################################################################
+sub linkToColumnText {
+  my $text = shift;
+  my $col = shift;
+  my $tab = shift;
+  $text = $q->escapeHTML( $text );
+  my $url = "'$HTML_BASE_DIR/cgi/help_popup.cgi?column_name=$col&table_name=$tab'";
+  my $link =<<"  END_LINK";
+  <SPAN title="$text" class="popup">
+  <IMG SRC=$HTML_BASE_DIR/images/greyqmark.gif BORDER=0 ONCLICK="popitup($url);"></SPAN>
+  END_LINK
+  return $link;
+} # End linkToColumnText
+
+###############################################################################
+# linkFile: Creates a link to the file on the filesystem.
+#
+# arg file_name
+# 
+###############################################################################
+sub linkFile {
+  my $text = shift;
+  return $text;      
+} # End linkFile
+
+
+
+###############################################################################
+# show Table
+#
+# Displays the Table
+###############################################################################
+sub showTable {
+  my %args = @_;
+
+  #### Process the arguments list
+  my $query_parameters_ref = $args{'parameters_ref'};
+  my %parameters = %{$query_parameters_ref};
+  my $with_options = $args{'with_options'};
+
+
+  #### Get the specified level of detail or set to BASIC
+  my $detail_level = $q->param('detail_level') || "BASIC";
+  my $base_url = "$CGI_BASE_DIR/$SBEAMS_SUBDIR/$PROGRAM_FILE_NAME";
+  my $apply_action  = $parameters{'action'} || $parameters{'apply_action'};
+
+
+  #### Get the query to show this table
+  my ($main_query_part) =
+    $sbeamsMOD->returnTableInfo($TABLE_NAME,$detail_level."Query",
+    $query_parameters_ref);
+
+  #### Display the table controls
+  my ($full_where_clause,$full_orderby_clause) = 
+    $sbeams->processTableDisplayControls($TABLE_NAME);
+
+
+  #### If a new ORDER BY clause is specified, remove the default one
+  if ($full_orderby_clause) {
+    $main_query_part =~ s/\s*ORDER BY.*//i;
+  } else {
+    if ($main_query_part =~ /\s*(ORDER BY.+)/is) {
+      $full_orderby_clause = $1;
+      $main_query_part =~ s/\s*ORDER BY.+//is;
+    }
+  }
+
+  $full_where_clause =~ s/^AND/WHERE/;		#added 8.9.04 Turn the sql into a temp table and then query with any where_clauses so the column alias can be used
+  $full_orderby_clause =~ s/\w+\./ /ig;		#added 8.10.04 Removes any Table prefixes from full_orderby_clause.  WARNING This will cause an error for queries with the same column name coming from multiple tables 
+ 
+  #### Build the final query
+  my $sql_query = qq~
+      select * from 
+      ( $main_query_part
+      ) AS TEMP
+       $full_where_clause
+       $full_orderby_clause
+                    ~;
+#  print "<PRE>$sql_query\n\n</PRE>";
+
+
+  #### Special hack for cached resultsets.  Allow Admins to specify a
+  #### different username
+  if ($TABLE_NAME eq 'cached_resultset' &&
+      $sbeams->getCurrent_work_group_name() eq 'Admin') {
+    if ($full_where_clause =~ /username/) {
+      $full_where_clause =~ s/WHERE //;
+      $sql_query =~ s/AND CR.contact_id = '\d+'/AND $full_where_clause/;
+    }
+  }
+
+
+  #### Get the url link data
+  my %url_cols = $sbeamsMOD->returnTableInfo($TABLE_NAME,"url_cols");
+  my %hidden_cols = $sbeamsMOD->returnTableInfo($TABLE_NAME,"hidden_cols");
+
+
+  #### Define some variables for the resultset
+  my %resultset = ();
+  my $resultset_ref = \%resultset;
+
+  #### If the apply action was to recall a previous resultset, do it
+  my %rs_params = $sbeams->parseResultSetParams(q=>$q);
+  if ($apply_action eq "VIEWRESULTSET") {
+    $sbeams->readResultSet(
+       resultset_file=>$rs_params{set_name},
+       resultset_ref=>$resultset_ref,
+       query_parameters_ref=>\%parameters
+    );
+
+
+  #### Otherwise fetch the results from the database server
+  } else {
+
+    print STDERR "SQL => $sql_query\n" if DEBUG;
+
+    #### Fetch the results from the database server
+    $sbeams->fetchResultSet(sql_query=>$sql_query,
+      resultset_ref=>$resultset_ref);
+
+    #### Store the resultset and parameters to disk resultset cache
+    $rs_params{set_name} = "SETME";
+    $sbeams->writeResultSet(
+      resultset_file_ref=>\$rs_params{set_name},
+      resultset_ref=>$resultset_ref,
+      query_parameters_ref=>\%parameters
+    );
+  }
+
+
+  #### Display the resultset
+  $sbeams->displayResultSet(
+    rs_params_ref=>\%rs_params,
+    url_cols_ref=>\%url_cols,
+    hidden_cols_ref=>\%hidden_cols,
+    #max_widths=>\%max_widths,
+    resultset_ref=>$resultset_ref,
+    #column_titles_ref=>\@column_titles,
+    base_url=>$base_url,
+    query_parameters_ref=>\%parameters,
+  );
+
+
+  #### Display the resultset controls
+  $sbeams->displayResultSetControls(
+    rs_params_ref=>\%rs_params,
+    resultset_ref=>$resultset_ref,
+    query_parameters_ref=>\%parameters,
+    base_url=>$base_url
+  );
+
+
+} # end showTable
+
+
+
+###############################################################################
+# Process Entry Form
+#
+###############################################################################
+sub processEntryForm {
+    my $element;
+    my $sql_query;
+    my @returned_information;
+    my $tmp;
+
+    #### Get the columns for this table
+    my @columns = $sbeamsMOD->returnTableInfo($TABLE_NAME,"ordered_columns");
+    my %input_types = $sbeamsMOD->returnTableInfo($TABLE_NAME,"input_types");
+
+
+    # Check to see if there is a column which will allow a range of numbers
+    # over which a multi-insert could be performed
+    my ($multi_insert_column) = 
+      $sbeamsMOD->returnTableInfo($TABLE_NAME,"MULTI_INSERT_COLUMN");
+
+
+    #### Read the form values for each column
+    my %parameters;
+    my $n_params_found = $sbeams->parse_input_parameters(
+      q=>$q,parameters_ref=>\%parameters,
+      columns_ref=>\@columns,input_types_ref=>\%input_types);
+
+    #foreach my $key (keys %parameters)
+    #  {
+    #  print "$key == $parameters{$key}<br>";
+    #  }
+    my $apply_action  = $parameters{apply_action};
+
+
+    #### Obtain information about the current user
+    $current_username = $sbeams->getCurrent_username;
+    $current_contact_id = $sbeams->getCurrent_contact_id;
+    $current_work_group_id = $sbeams->getCurrent_work_group_id;
+    $current_work_group_name = $sbeams->getCurrent_work_group_name;
+    $current_project_id = $sbeams->getCurrent_project_id;
+    $current_project_name = $sbeams->getCurrent_project_name;
+
+
+    #### Get information about the nature of the columns for this table
+    #### This whole system is messy and ugly.  Needs better implementation!!!!
+    my @required_columns = 
+      $sbeamsMOD->returnTableInfo($TABLE_NAME,"required_columns");
+
+    my @data_columns = 
+      $sbeamsMOD->returnTableInfo($TABLE_NAME,"data_columns");
+    my %input_types = 
+      $sbeamsMOD->returnTableInfo($TABLE_NAME,"input_types");
+    my %data_types = 
+      $sbeamsMOD->returnTableInfo($TABLE_NAME,"data_types");
+    my %data_scales = 
+      $sbeamsMOD->returnTableInfo($TABLE_NAME,"data_scales");
+
+
+    #### Check for missing required information
+    my $error_message;
+
+    #### Unless we're just DELETing
+    unless ($apply_action eq "DELETE") {
+      if (@required_columns) {
+
+	#### Create a hash of the data columns for lookups
+	my %data_columns_hash;
+	foreach $element (@data_columns) {
+	  $data_columns_hash{$element} = 1;
+	}
+
+	#### Loop over each required column and make sure it exists if it's
+	#### also a data column
+	foreach $element (@required_columns) {
+
+	  if ($data_columns_hash{$element}) {
+	    unless (defined($parameters{$element}) &&
+		    $parameters{$element} gt '') {
+	      $error_message .= "<LI> You must provide a <B>$element</B>.";
+	    }
+	  }
+	}
+
+      }
+
+
+      #### Check that the data entered was valid for the datatype
+      foreach $element (@data_columns) {
+
+	#### Don't check if this is a multi_insert_column
+	next if ($multi_insert_column && $element eq $multi_insert_column);
+
+	#### Make sure that character data isn't too long for the database
+	if ($parameters{$element} gt '') {
+	  if ($data_types{$element} eq 'varchar' ||
+	      $data_types{$element} eq 'char') {
+	    if (length($parameters{$element}) > $data_scales{$element}) {
+	      $error_message .= "<LI> Size limit for field <B>$element</B> is ".
+		$data_scales{$element}." but your entry is ".
+		  length($parameters{$element})." characters long.  Please ".
+		  "shorten it or contact your SBEAMS administrator if this ".
+		  "limitation seems unreasonable.";
+	    }
+	  }
+
+	  #### Make sure that integer data contains only numbers
+	  if ($data_types{$element} eq 'int') {
+	    unless ($parameters{$element} =~ /^[\d\-\+]+$/) {
+	      $error_message .= "<LI> The field <B>$element</B> is of type ".
+                "integer, but your entry '".$parameters{$element}.
+                "' seems to contain non-integer ".
+                "characters.  Please enter just an integer.";
+	    }
+	  }
+
+	  #### Make sure that real/float data contains only characters that
+	  #### could plausibly make up a number (doesn't prevent 45.-23.eee)
+	  if ($data_types{$element} eq 'real' ||
+	      $data_types{$element} eq 'float') {
+	    unless ($parameters{$element} =~ /^[\d\-\+\.e]+$/) {
+	      $error_message .= "<LI> The field <B>$element</B> is of type ".
+		$data_types{$element}.", but your entry '".$parameters{$element}.
+                "' seems to contain non-numeric ".
+                "characters.  Please enter just a real number.";
+	    }
+	  }
+
+	  #### If the column name ends in _tag, insist upon alphanumeric
+	  #### characters only or period okay
+	  if ($element =~ /\_tag$/ && $parameters{$element} !~ /^[\w\.\-]+$/) {
+	    $error_message .= "<LI> The field <B>$element</B> is required ".
+	      "to be a short name that might be used for a file or directory ".
+              "and may not have any non-alphanumeric characters.  Please ".
+              "go back and remove any characters that are not ".
+              "letters or numbers or underscores. ".
+              "Spaces are also <B>not</B> allowed.";
+	  }
+
+	}
+
+      } # end foreach element
+
+      #### Run the module-specific data check
+      my $chk_err = preUpdateDataCheck(parameters_ref=>\%parameters);
+      if ($chk_err) {
+        $sbeams->printInsufficientPermissions($chk_err, 'Permissions');
+        return 0;
+      }
+
+
+    } # end unless (DELETE)
+
+
+    #### If any error messages have been kicked out, print and return
+    if ($error_message) {
+      $sbeams->printIncompleteForm($error_message);
+      return 0;
+    }
+
+    # Multi-Insert logic.  In certain cases, we'll allow the user to specify
+    # a range like "15-20,22-23" for exactly one field, and this triggers
+    # INSERTion of multiple rows.
+    my @series;
+    if ($multi_insert_column) {
+      my $input = $parameters{$multi_insert_column};
+      $input =~ s/\-/\.\./g;
+
+      # Replace any characters which are NOT 0-9 or , or . which a space
+      # before we let it go into eval!!
+      $input =~ tr/0-9\,\./ /cs;
+
+      @series = eval $input;
+
+      if (@series) { }
+      else {
+        $input =~ /(\d*)/;
+        @series = ($1);
+      }
+
+      if (@series) { }
+      else {
+        push (@returned_information,"NOT ACCEPTED");
+        push (@returned_information,
+          "Unable to parse your input '$parameters{$multi_insert_column}'
+           into a series of numbers.");
+        printAttemptedChangeResult($apply_action,@returned_information);
+        return;
+      }
+
+      if ( ($#series > 0) && $parameters{$PK_COLUMN_NAME} && 
+           ($apply_action ne "INSERT") ) {
+        push (@returned_information,"NOT ACCEPTED");
+        push (@returned_information,
+          "Sorry, cannot UPDATE or DELETE multiple records.
+           Only INSERT of multiple records permitted.");
+        printAttemptedChangeResult($apply_action,@returned_information);
+        return;
+      }
+    } else {
+      @series = ( "dummy" );
+    }
+
+
+    my $multi_insert;
+    foreach $multi_insert (@series) {
+      if ($multi_insert_column) {
+        $parameters{$multi_insert_column}=$multi_insert;
+        print "Processing record for $multi_insert...<BR>\n";
+      }
+
+    # Get rid of newlines and flanking spaces in text fields
+    foreach my $field ( keys( %input_types ) ){ 
+      if ( $input_types{$field} eq 'text' ) {
+        $parameters{$field} =~ s/[\s]+/ /gm;
+        $parameters{$field} =~ s/^[\s]+//;
+        $parameters{$field} =~ s/[\s]+$//;
+      }
+    }
+
+    # Note the following block has NOT been indented properly for historical
+    # reasons of insertion into above foreach statement
+
+    # If a PK has already been provided and action is not INSERT, build
+    # SQL statements for DELETE and UPDATE
+    if ($parameters{$PK_COLUMN_NAME} && ($apply_action ne "INSERT")) {
+        $sql_query = "";
+        if ($apply_action eq "DELETE") {
+
+            $sql_query = qq!
+                UPDATE $DB_TABLE_NAME SET
+                  date_modified=CURRENT_TIMESTAMP,
+                  modified_by_id=$current_contact_id,
+                  record_status='D'
+                WHERE $PK_COLUMN_NAME=$parameters{$PK_COLUMN_NAME}
+            !;
+
+        } else {
+            $sql_query = "UPDATE $DB_TABLE_NAME SET ";
+
+            foreach $element (@data_columns) {
+              $tmp = $parameters{$element};
+
+              # If datatype is password, then decode the ********** to
+              # revert back to the original password, or just keep as is if
+              # blank, or encrypt it if it's something else
+              if ($input_types{$element} eq "password") {
+                if ( substr($tmp,0,10) eq "**********" ) {
+                  $tmp = substr($tmp,10,50);
+                } elsif ( $tmp gt "" ) {
+                  my $salt  = (rand() * 220);
+                  $tmp = crypt($tmp, $salt);
+                }
+              }
+
+              #### If the value is blank, put in a NULL value
+              if ( $tmp eq '') {
+
+                #### unless it is type file in which case leave alone
+                unless ($input_types{$element} eq "file") {
+                  $sql_query .= "$element=NULL,\n";
+                }
+
+              #### If the datatype was fixed, then this can't be updated via MT
+              } elsif ($input_types{$element} eq "fixed") {
+		#### Do nothing with this field, ignore it
+
+              # Change all ' to '' so that it can go in the INSERT statement
+              } else {
+                $tmp =~ s/\'/\'\'/g;
+                $sql_query .= "$element='$tmp',\n";
+              }
+            }
+
+      if ( $parameters{owner_group_id} ) { 
+            $sql_query .= "owner_group_id=$parameters{owner_group_id},";
+      }
+
+
+            $sql_query .= qq!
+                  date_modified=CURRENT_TIMESTAMP,
+                  modified_by_id='$current_contact_id',
+                  record_status='$parameters{record_status}'
+                WHERE $PK_COLUMN_NAME=$parameters{$PK_COLUMN_NAME}
+            !;
+							
+        }
+
+        if ($sql_query eq "") {
+            print "ERROR: Action '$apply_action' not recognized.<BR>\n";
+            return;
+        }
+
+    # Otherwise, the action is INSERT, so build a SQL statement for that
+    } else {
+
+        # Since this is a new INSERT, zero out any previous PK
+        $parameters{$PK_COLUMN_NAME}=0;
+
+        # Check for an existing record that this would duplicate
+        my @key_columns = 
+          $sbeamsMOD->returnTableInfo($TABLE_NAME,"key_columns");
+        my %unique_values;
+        if (@key_columns) {
+          foreach $element (@key_columns) {
+	    $unique_values{$element} = $parameters{$element};
+          }
+        }
+        my $existing_record = checkForPreexistingRecord(%unique_values);
+        if ($existing_record) {
+            printPreexistingRecord($existing_record);
+            return;
+        }
+
+
+        # Build the column names and VALUES for each data column
+        my ($query_part1,$query_part2,$tmp);
+        foreach $element (@data_columns) {
+          $tmp = $parameters{$element};
+
+          # If datatype is password, then decode the ********** to
+          # revert back to the original password, or just keep as is if
+          # blank, or encrypt it if it's something else
+          if ($input_types{$element} eq "password") {
+             if ( substr($tmp,0,10) eq "**********" ) {
+               $tmp = substr($tmp,10,50);
+             } elsif ( $tmp gt "" ) {
+               my $salt  = (rand() * 220);
+               $tmp = crypt($tmp, $salt);
+             }
+          }
+
+          #### If the value is blank, put in a NULL value
+          if ( $tmp eq '') {
+            #$query_part2 .= "NULL,";
+
+          #XXX If the datatype was fixed, then this can't be updated via MT
+	  #### Reversed previous decision to do above.  Insert of
+          #### fixed is needed to allow PR_search_hit_annotation and
+          #### SN_manual_genotype_call to function properly.
+          #### -EDeutsch 2006-01-08. See today's email
+          #} elsif ($input_types{$element} eq "fixed") {
+	  #  #### Do nothing with this field, ignore it
+
+          # Change all ' to '' so that it can go in the INSERT statement
+          } else {
+            $tmp =~ s/\'/\'\'/g;
+            $query_part1 .= "$element,";
+            $query_part2 .= "'$tmp',";
+          }
+        }
+
+    # This was formerly always $curr_work_group, can now set    
+    my $owner_group_id = ( $parameters{owner_group_id} ) ?
+                           $parameters{owner_group_id} : $current_work_group_id;
+
+        # Build the SQL statement
+        $sql_query = qq!
+ 		INSERT INTO $DB_TABLE_NAME
+		  ($query_part1 created_by_id,date_created,date_modified,
+			 modified_by_id,owner_group_id,record_status)
+		VALUES
+		  ($query_part2 $current_contact_id,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,
+			 $current_contact_id,$owner_group_id, '$parameters{record_status}')
+        !;
+				
+		
+    }
+
+    #### Check to see if there is project permission control over this table
+    my $parent_project_id = $sbeamsMOD->getParentProject(
+      table_name => $TABLE_NAME,
+      action => $apply_action,
+      parameters_ref => \%parameters,
+    );
+
+    # Execute the SQL statement extract status and PK from result
+    # @returned_information = $sbeams->applySqlChange(
+    @returned_information = $sbeams->applySQLChange(
+      SQL_statement => $sql_query,
+      current_contact_id => $current_contact_id,
+      table_name => $TABLE_NAME,
+      record_identifier => "$PK_COLUMN_NAME=$parameters{$PK_COLUMN_NAME}",
+      PK_column_name => $PK_COLUMN_NAME,
+      parent_project_id => $parent_project_id
+    );
+
+
+    #### Extract the returned status and relevant PK value from result
+    my $returned_request_status = shift @returned_information;
+    my $returned_request_PK = shift @returned_information;
+
+
+    #### Put the returned PK into parameters.  Why not always do this?
+    if ($apply_action eq "INSERT") {
+      $parameters{$PK_COLUMN_NAME}=$returned_request_PK;
+    }
+
+
+    #### Display/return the result of the attempted change
+    printAttemptedChangeResult($apply_action,$returned_request_status,
+      @returned_information);
+
+
+    #### If change was successful, then loop through all the columns to
+    #### see if there are post processing steps that need to happen.
+    #### They are: 1) File uploads
+    ####           2) multilink columns
+    if ($returned_request_status eq "SUCCESSFUL") {
+      print "<BR><BR>\n";
+
+      #### Check for any file uploads
+      my $filename;
+      foreach $element (keys %input_types) {
+        #### Check for any file uploaded data for columns of type file
+        if ($input_types{$element} eq "file") {
+	  $filename = "$parameters{$PK_COLUMN_NAME}_$element.dat";
+          if ($parameters{$element}) {
+            print "Uploading data for field '$element' from client file ".
+              "'$parameters{$element}'<BR>\n";
+	    my $fh = $q->upload($element);
+            if ($fh) {
+              writeDataFile($fh, $TABLE_NAME, $filename);
+            } else {
+              print "ERROR: File '$parameters{$element}' was not uploaded.  Perhaps your web browser could not locate your file or ther is a permission problem?  Please check the specified filename and try again.<BR>\n";
+            }
+          } else {
+            print "Nothing to upload for field '$element'<BR>\n";
+          }
+
+          #### If there's a Windows path as part of the parameter,
+          #### update the table for the name without the path
+          if ($parameters{$element} =~ /:\\/ ||
+              $parameters{$element} =~ /^\\\\/) {
+            my $file_name = $parameters{$element};
+            $file_name =~ s/^.*\\//;
+            $file_name =~ s/\'/''/g;
+            $sql_query = qq~
+              UPDATE $DB_TABLE_NAME SET
+                $element='$file_name'
+              WHERE $PK_COLUMN_NAME=$parameters{$PK_COLUMN_NAME}
+            ~;
+            $sbeams->executeSQL($sql_query);
+          }
+
+        } # end if file
+
+
+        #### Check for any file uploaded data for columns of type multilink
+        if ($input_types{$element} eq "multilink") {
+          my %fk_tables =
+            $sbeamsMOD->returnTableInfo($TABLE_NAME,"fk_tables");
+          updateLinkingTable(
+	    parent_table_name => $TABLE_NAME,
+            parent_pk_column_name => $PK_COLUMN_NAME,
+            parent_pk_value => $parameters{$PK_COLUMN_NAME},
+            child_pk_column_name => $element,
+            child_pk_values => $parameters{$element},
+            linking_table_name => $fk_tables{$element},
+          );
+
+        } # end if multilink
+
+
+      } # end foreach
+
+      #### Execute the postUpdateOrInsertHook()
+      postUpdateOrInsertHook(
+        parameters_ref => \%parameters,
+        pk_value => $parameters{$PK_COLUMN_NAME},
+      );
+
+
+    } # end if SUCCESSFUL
+
+
+
+    } # end multi-insert
+
+
+} # end processEntryForm
+
+
+
+###############################################################################
+# Check For Preexisting Record
+#
+# Before the record is actually added, we check to see if there
+# is already a matching record.
+###############################################################################
+sub checkForPreexistingRecord {
+  my %unique_values = @_;
+  my $element;
+  my $foundvalue = '';
+  my $error_message = '';
+
+  my $sql_query = qq!
+	SELECT $PK_COLUMN_NAME
+	  FROM $DB_TABLE_NAME
+	 WHERE $PK_COLUMN_NAME > 0!;
+
+  foreach $element (keys %unique_values) {
+    my $value = $unique_values{$element};
+    #print "$value == $element<br>";
+    $value =~ s/\'/\'\'/g;
+    if ($value eq '') {
+      $sql_query .= "
+         AND ( $element LIKE '$value' OR $element IS NULL )";
+    } else {
+      $sql_query .= "
+         AND $element LIKE '$value'";
+    }
+    $error_message .= "<B>$element</B> = '$unique_values{$element}'<BR>\n";
+  }
+
+  # ADD FIX?  Check for preexistence doesn't take into account deleted records.
+  # $sql_query .= " AND record_status != 'D' ";
+
+  my @rows = $sbeams->selectOneColumn($sql_query);
+
+  if (@rows) {
+    $log->debug( $sql_query) ;
+    print qq~
+      The following columns were checked for uniqueness:<BR>
+      $error_message<BR>
+    ~;
+  }
+
+  return($rows[0]);
+
+} # end checkForPreexistingRecord
+
+
+
+###############################################################################
+# Print Preexisting Record Message
+###############################################################################
+sub printPreexistingRecord {
+    my $record_id = shift;
+
+    my $back_button = $sbeams->getGoBackButton();
+    print qq!
+        <P>
+        <H2>This $CATEGORY already exists</H2>
+        $LINESEPARATOR
+        <P>
+        <TABLE WIDTH=$MESSAGE_WIDTH><TR><TD>
+        Another $CATEGORY record already exists that would violate
+        uniqueness contraints.  Perhaps you are trying to enter an item
+        that already exists.  It is possible that the uniqueness constraints
+        are too rigid, and they need to be relaxed a little to allow two
+        records that are very similar.  It is also possible that
+        there is a deleted item that matches the new entry (flagged as deleted
+        but not yet purged from the system).  In that case, click on the
+        existing (deleted) record, undelete it, and update as appropriate.
+        <CENTER>
+        <A HREF="$PROGRAM_FILE_NAME&$PK_COLUMN_NAME=$record_id">Click
+          here to see the existing matching record</A><BR><BR>
+        $back_button
+        </CENTER>
+        </TD></TR></TABLE>
+        $LINESEPARATOR
+        <P>!;
+} # end printPreexistingRecord
+
+
+###############################################################################
+# Print Results of the attempted database change
+###############################################################################
+sub printAttemptedChangeResult {
+    my $apply_action = shift || "?????";
+    my @returned_result=@_;
+    my $error;
+
+    my $subdir = $sbeams->getSBEAMS_SUBDIR();
+    $subdir .= "/" if ($subdir);
+
+    # First element is SUCCESSFUL or DENIED.  Rest is additional messages.
+    my $result = shift @returned_result;
+    my $back_button = $sbeams->getGoBackButton();
+
+    $sbeams->printUserContext();
+
+    print qq!
+        <P>
+        <H2>Return Status</H2>
+        $LINESEPARATOR
+        <P>
+        <TABLE WIDTH=$MESSAGE_WIDTH><TR><TD>
+        $apply_action of your record was <B>$result</B>.
+        <P>
+        <BLOCKQUOTE>
+    !;
+
+    foreach $error (@returned_result) { print "<LI>$error<P>\n"; }
+
+    print qq!
+        </BLOCKQUOTE>
+        </TD></TR></TABLE>
+        $LINESEPARATOR
+        <P>
+    !;
+
+    #### If the change was not successful, just show a simple [GO BACK]
+    if ($result ne 'SUCCESSFUL') {
+      print "$back_button<BR>";
+      return;
+    }
+
+    #### If it was successful, suggest some things the user might do next
+    print qq!
+        <CENTER><B>
+        You can click [Go Back] to see the form again, make a few changes,
+        and INSERT another similar record $back_button
+        <BR><BR><BR>
+        [ <A HREF="$CGI_BASE_DIR/${subdir}$PROGRAM_FILE_NAME">View $CATEGORY Table</A>]
+        </B></CENTER><BR><BR><BR><BR>
+    !;
+
+    # See if this table has a next_step property, i.e. a likely next "Add"
+    # function.  If so, then print out the link(s) to take the user there.
+    my $sql_query = qq~
+	SELECT next_step
+	  FROM $TB_TABLE_PROPERTY
+	 WHERE table_name = '$TABLE_NAME'
+    ~;
+    my ($next_step) = $sbeams->selectOneColumn($sql_query);
+    if ($next_step) {
+      my @next_steps = split(",",$next_step);
+      foreach $next_step (@next_steps) {
+        print qq~
+	  <B>Next Step? [ <A HREF="$CGI_BASE_DIR/${subdir}ManageTable.cgi?TABLE_NAME=$next_step&ShowEntryForm=1">Add $next_step</A>
+	  ]</B>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
+        ~;
+      }
+    }
+
+
+} # end printAttemptedChangeResult
+
+
+###############################################################################
+# WriteData File
+###############################################################################
+sub writeDataFile {
+    my $data = shift;
+    my $subdir  = shift;
+    my $filename  = shift;
+    my $buffer;
+
+
+    #### Check that the upload directory is there
+    unless (-e "$UPLOAD_DIR") {
+      die("CONFIGURATION ERROR: The upload directory '$UPLOAD_DIR' does not exist! ".
+        "Please report this problem to your SBEAMS administrator.<BR>");
+    }
+
+
+    #### Check that the directory for this table is there
+    unless (-d "$UPLOAD_DIR/$subdir") {
+      mkdir("$UPLOAD_DIR/$subdir") ||
+      die("SERVER STORAGE ERROR: The upload directory could not be created! ".
+        "Please report this problem to your SBEAMS administrator.<BR>");
+    }
+
+
+    #### Open the output file
+    open(DATA, ">$UPLOAD_DIR/$subdir/$filename")
+      || die("Could not open $filename: $!");
+
+
+    #### Dump the uploaded data into the output file
+    my $byte_count = 0;
+    while (read($data, $buffer, 1024)) {
+      print DATA $buffer;
+      $byte_count += length($buffer);
+    }
+    close(DATA);
+
+
+    print "&nbsp;&nbsp;&nbsp;&nbsp;$byte_count bytes uploaded.<BR>\n";
+
+
+} # end writeDataFile
+
+
+
+###############################################################################
+# getFile
+###############################################################################
+sub getFile {
+
+  #### Get the columns for this table
+  my @columns = $sbeamsMOD->returnTableInfo($TABLE_NAME,"ordered_columns");
+  my %input_types = $sbeamsMOD->returnTableInfo($TABLE_NAME,"input_types");
+
+  #### Read the form values for each column
+  my %parameters;
+  my $n_params_found = $sbeams->parse_input_parameters(
+    q=>$q,
+    parameters_ref=>\%parameters,
+    columns_ref=>\@columns,
+    input_types_ref=>\%input_types,
+  );
+
+
+  #### Load data from this record into hash
+  my $column_list = join(",",@columns);
+  my $sql = qq~
+    SELECT $column_list
+      FROM $DB_TABLE_NAME
+     WHERE $PK_COLUMN_NAME='$parameters{$PK_COLUMN_NAME}'
+  ~;
+  my @rows = $sbeams->selectSeveralColumns($sql);
+  my @row = @{$rows[0]};
+  for (my $element=0; $element<scalar(@row); $element++) {
+    $parameters{@columns[$element]}=@row[$element];
+  }
+
+
+  #### Determine the name of the requested file
+  my $data_file =
+    "$TABLE_NAME/$parameters{$PK_COLUMN_NAME}_".
+    "$parameters{GetFile}.dat";
+
+  my $full_file_name = "$UPLOAD_DIR/$data_file";
+
+  my $file_size = -s $full_file_name;
+
+
+  #### If the file is nonzero, then send it
+  if ($file_size > 0) {
+
+    #### Determine the content type based on the file name
+    my $content_type = getContentType(
+      file_name => $parameters{$parameters{GetFile}},
+    ) || 'text/plain';
+
+
+    #### Send the HTTP header
+    print "Content-type: $content_type\n\n";
+
+    #### Send the contents of the file
+    my $buffer;
+    open(DATA, $full_file_name) || die("Couldn't open $full_file_name: ".$!);
+    while (read(DATA, $buffer, 1024)) {
+      print $buffer;
+    }
+
+  } else {
+    $sbeamsMOD->printPageHeader();
+    print "ERROR: The requested file was not found, not originally uploaded, or is a zero length file.  The data you seek are not there.<BBR>\n";
+  }
+
+
+} # end getFile
+
+
+
+###############################################################################
+# getContentType
+###############################################################################
+sub getContentType {
+  my %args = @_;
+
+  my $file_name = $args{'file_name'};
+
+  #### Return empty string if a non-empty input file name was not provided
+  return '' unless ($file_name);
+
+  #### Get the file extension
+  my $file_ext = '';
+  if ($file_name =~ /\.(.+)?$/) {
+    $file_ext = $1;
+  }
+
+
+  #### If we found a valid extention
+  if ($file_ext) {
+
+    #### Parse the mime.types file
+    my $mime_types_file = '/etc/mime.types';
+    my $line;
+    my %ext_hash;
+    open(DATA,$mime_types_file) || die("Couldn't open $mime_types_file: ".$!);
+    while ($line=<DATA>) {
+      next if ($line =~ /^\#/);
+      $line =~ s/[\r\n]//g;
+      $line =~ s/\s+$//;
+      next unless ($line);
+
+      #### Split the line into its components
+      my @items = split(/\s+/,$line);
+      my $n_items = scalar(@items);
+
+      #### If there's more than one item, register each of the file
+      #### extensions with the mime type in the hash
+      if ($n_items > 1) {
+        for (my $i=1;$i<$n_items;$i++) {
+          $ext_hash{lc($items[$i])} = $items[0];
+        }
+      }
+
+    }
+
+    #### If there's a match to this extention, return it
+    if ($ext_hash{lc($file_ext)}) {
+      return $ext_hash{lc($file_ext)};
+    }
+
+  }
+
+  return '';
+
+} # end getContentType
+
+
+
+###############################################################################
+# updateLinkingTable
+###############################################################################
+sub updateLinkingTable {
+  my %args = @_;
+
+  #### Extract input parameters
+  my $parent_table_name = $args{'parent_table_name'}
+    || die("Parameter parent_table_name not passed");
+  my $parent_pk_column_name = $args{'parent_pk_column_name'}
+    || die("Parameter parent_pk_column_name not passed");
+  my $parent_pk_value = $args{'parent_pk_value'}
+    || die("Parameter parent_pk_value not passed");
+  my $child_pk_column_name = $args{'child_pk_column_name'}
+    || die("Parameter child_pk_column_name not passed");
+  my $child_pk_values = $args{'child_pk_values'} || '';  #might be none
+  my $linking_table_name = $args{'linking_table_name'}
+    || die("Parameter linking_table_name not passed");
+
+
+  #### Get the PK of the linking table
+  my ($linking_pk_column_name) =
+    $sbeamsMOD->returnTableInfo($linking_table_name,"PK_COLUMN_NAME");
+
+
+  #### We are going to make the reckless assumption that in the linking
+  #### table, column 0 is the PK, column 1 is the parent PK, and column 2
+  #### is the child PK
+  my @columns = $sbeamsMOD->returnTableInfo($linking_table_name,
+    "ordered_columns");
+  my $parent_pk_column_name = $columns[1];
+  my $child_pk_column_name = $columns[2];
+
+
+  #### Get the real database table names
+  my ($parent_table_name) =
+    $sbeamsMOD->returnTableInfo($parent_table_name,"DB_TABLE_NAME");
+  my ($linking_table_name) =
+    $sbeamsMOD->returnTableInfo($linking_table_name,"DB_TABLE_NAME");
+
+
+  #### Extract the child_pk_values into an array and a hash
+  my @child_pk_values = split(',',$child_pk_values);
+  my %child_pk_values = ();
+  foreach my $element (@child_pk_values) {
+    $child_pk_values{$element} = 1;
+  }
+  
+  $log->debug( <<"  END" );
+  parent_table_name => $parent_table_name
+  parent_pk_column_name => $parent_pk_column_name
+  parent_pk_value => $parent_pk_value
+  child_pk_column_name => $child_pk_column_name
+  child_pk_values => $child_pk_values
+  linking_table_name => $linking_table_name
+  linking_pk_column_name => $linking_pk_column_name
+  END
+
+
+  #### Get all existing rows in the linking table for the parent
+  my $sql = qq~
+    SELECT $linking_pk_column_name,$child_pk_column_name
+      FROM $linking_table_name
+     WHERE $parent_pk_column_name = '$parent_pk_value'
+  ~;
+  my @rows = $sbeams->selectSeveralColumns($sql);
+
+
+  #### Debugging stuff
+  my $verbose = 0;
+  if (0 == 1) {
+    $verbose = 2;
+    print "<PRE>\n";
+  }
+
+
+  #### Loop over each one, deciding what to do with it
+  foreach my $row (@rows) {
+    my $linking_id = $row->[0];
+    my $child_id = $row->[1];
+
+    #### If this row already, exists, UPDATE it and delete in hash
+    if ($child_pk_values{$child_id}) {
+
+      my %rowdata = (
+        record_status => 'N',
+      );
+
+      $sbeams->updateOrInsertRow(
+        update => 1,
+        table_name => $linking_table_name,
+        rowdata_ref => \%rowdata,
+        PK => $linking_pk_column_name,
+        PK_value => $linking_id,
+        add_audit_parameters => 1,
+        verbose => $verbose,
+      );
+
+      delete($child_pk_values{$child_id});
+
+    #### Otherwise, mark it as DELETED
+    } else {
+
+      my %rowdata = (
+        record_status => 'D',
+      );
+
+      $sbeams->updateOrInsertRow(
+        update => 1,
+        table_name => $linking_table_name,
+        rowdata_ref => \%rowdata,
+        PK => $linking_pk_column_name,
+        PK_value => $linking_id,
+        add_audit_parameters => 1,
+        verbose => $verbose,
+      );
+
+    }
+
+  }
+
+
+  #### Loop over each of the remaining new items in the hash
+  #### INSERTing the new rows
+  while (my ($key1,$key2) = each %child_pk_values) {
+
+    my %rowdata = (
+     $parent_pk_column_name => $parent_pk_value,
+     $child_pk_column_name => $key1,
+    );
+
+    $sbeams->updateOrInsertRow(
+      insert => 1,
+      table_name => $linking_table_name,
+      rowdata_ref => \%rowdata,
+      PK => $linking_pk_column_name,
+      add_audit_parameters => 1,
+      verbose => $verbose,
+    );
+
+
+  }
+
+
+  if ($verbose) {
+    print "</PRE><BR>\n";
+  }
+
+  return 1;
+
+} # end updateLinkingTable
+
+
+
+###############################################################################
+# updateChildTable
+###############################################################################
+sub updateChildTable {
+  my %args = @_;
+
+  #### Extract input parameters
+  my $parent_table_name = $args{'parent_table_name'}
+    || die("Parameter parent_table_name not passed");
+  my $parent_pk_column_name = $args{'parent_pk_column_name'}
+    || die("Parameter parent_pk_column_name not passed");
+  my $parent_pk_value = $args{'parent_pk_value'}
+    || die("Parameter parent_pk_value not passed");
+
+  my $child_table_name = $args{'child_table_name'}
+    || die("Parameter child_table_name not passed");
+  my $child_pk_column_name = $args{'child_pk_column_name'}
+    || die("Parameter child_pk_column_name not passed");
+
+  my $child_data_columns = $args{'child_data_columns'} || '';
+  my $child_data_values = $args{'child_data_values'} || '';
+
+  my $add_audit_parameters = $args{'add_audit_parameters'} || '';
+
+
+  #### Get the real database table names
+  my ($parent_table_name) =
+    $sbeamsMOD->returnTableInfo($parent_table_name,"DB_TABLE_NAME");
+  my ($child_table_name) =
+    $sbeamsMOD->returnTableInfo($child_table_name,"DB_TABLE_NAME");
+
+
+  #### Get all existing rows in the child table for the parent
+  my $sql = qq~
+    SELECT $child_pk_column_name
+      FROM $child_table_name
+     WHERE $parent_pk_column_name = '$parent_pk_value'
+     ORDER BY $child_pk_column_name
+  ~;
+  my @rows = $sbeams->selectSeveralColumns($sql);
+
+
+  #### Debugging stuff
+  my $verbose = 0;
+  if (0 == 1) {
+    $verbose = 2;
+    print "<PRE>\n";
+  }
+
+  #### Determine the number of old and new rows
+  my $n_old_rows = scalar(@rows);
+  my $n_new_rows = scalar(@{$child_data_values});
+  my $inew = 0;
+
+  #### Loop over each one, overwriting new data
+  for (my $iold=0;$iold<$n_old_rows;$iold++) {
+    my $child_id = $rows[$iold]->[0];
+
+    if ($iold < $n_new_rows) {
+      my %rowdata = (
+        $parent_pk_column_name => $parent_pk_value,
+      );
+      for (my $i; $i<scalar(@{$child_data_columns});$i++) {
+        $rowdata{$child_data_columns->[$i]} = $child_data_values->[$inew]->[$i]
+	  if (defined($child_data_values->[$inew]->[$i]));
+      }
+
+      $sbeams->updateOrInsertRow(
+        update => 1,
+        table_name => $child_table_name,
+        rowdata_ref => \%rowdata,
+        PK => $child_pk_column_name,
+        PK_value => $child_id,
+        add_audit_parameters => $add_audit_parameters,
+        verbose => $verbose,
+        #testonly => 1,
+      );
+
+    #### Otherwise, DELETE it
+    } else {
+
+      #### If it's an auditable table, just mark as deleted
+      if ($add_audit_parameters) {
+	my %rowdata = (
+          record_status => 'D',
+	);
+
+	$sbeams->updateOrInsertRow(
+          update => 1,
+          table_name => $child_table_name,
+          rowdata_ref => \%rowdata,
+          PK => $child_pk_column_name,
+          PK_value => $child_id,
+          add_audit_parameters => 1,
+          verbose => $verbose,
+        );
+
+      #### Else really DELETE it
+      } else {
+	my $sql = qq~
+	  DELETE FROM $child_table_name
+	   WHERE $child_pk_column_name = '$child_id'
+	~;
+	$sbeams->executeSQL($sql);
+
+      }
+
+    }
+
+    $inew++;
+
+  }
+
+
+  #### Loop over any remaining new items, INSERTing the new rows
+  while ($inew < $n_new_rows) {
+    my %rowdata = (
+      $parent_pk_column_name => $parent_pk_value,
+    );
+    for (my $i; $i<scalar(@{$child_data_columns});$i++) {
+      $rowdata{$child_data_columns->[$i]} = $child_data_values->[$inew]->[$i]
+        if (defined($child_data_values->[$inew]->[$i]));
+    }
+
+    $sbeams->updateOrInsertRow(
+      insert => 1,
+      table_name => $child_table_name,
+      rowdata_ref => \%rowdata,
+      PK => $child_pk_column_name,
+      add_audit_parameters => $add_audit_parameters,
+      verbose => $verbose,
+      #testonly => 1,
+    );
+
+    $inew++;
+
+  }
+
+
+  if ($verbose) {
+    print "</PRE><BR>\n";
+  }
+
+  return 1;
+
+} # end updateChildTable
+
+
+
+###############################################################################
+# saveTemplate
+#
+###############################################################################
+sub saveTemplate {
+
+  $sbeams->printUserContext();
+
+  #### Get the columns for this table
+  my @columns = $sbeamsMOD->returnTableInfo($TABLE_NAME,"ordered_columns");
+  my %input_types = $sbeamsMOD->returnTableInfo($TABLE_NAME,"input_types");
+
+
+  #### Read the form values for each column
+  my %parameters;
+  my $n_params_found = $sbeams->parse_input_parameters(
+    q=>$q,
+    parameters_ref=>\%parameters,
+    columns_ref=>\@columns,
+    input_types_ref=>\%input_types
+  );
+
+
+  #### Make sure a template name was provided
+  my $save_template_as_name = $parameters{save_template_as_name};
+  unless (defined($save_template_as_name) &&
+          $save_template_as_name gt '') {
+    my $back_button = $sbeams->getGoBackButton();
+    print qq~
+        <P>
+        <H2>Template Save Error</H2>
+        $LINESEPARATOR
+        <P>
+        <TABLE WIDTH=$MESSAGE_WIDTH><TR><TD>
+        Unable to save your template because no name was provided.
+	Please go back and provide a template name.
+        <P>
+        $back_button
+    ~;
+    return;
+  }
+
+
+  #### Obtain information about the current user
+  $current_contact_id = $sbeams->getCurrent_contact_id;
+
+
+  #### See if this template already exists
+  my $insert_flag = 1;
+  my $update_flag = 0;
+  my $PK_value = 0;
+  my $sql = qq~
+    SELECT form_template_id
+      FROM $TB_FORM_TEMPLATE
+     WHERE contact_id = '$current_contact_id'
+       AND program_file_name = '$PROGRAM_FILE_NAME'
+       AND template_name = '$save_template_as_name'
+       AND record_status != 'D'
+  ~;
+  my @form_template_ids = $sbeams-> selectOneColumn($sql);
+  if (scalar(@form_template_ids) == 1) {
+    $insert_flag = 0;
+    $update_flag = 1;
+    $PK_value = $form_template_ids[0];
+  }
+  if (scalar(@form_template_ids) > 1) {
+    die("ERROR: More than one template returned for $sql.".
+        "Please report this error.  It should never happen.");
+  }
+
+
+  #### Prepare the data to store
+  my %rowdata;
+  $rowdata{contact_id} = $current_contact_id;
+  $rowdata{program_file_name} = $PROGRAM_FILE_NAME;
+  $rowdata{template_name} = $parameters{save_template_as_name};
+
+  #### Prepare the parameters to store
+  my $temp_hash_ref;
+  foreach my $column (@columns) {
+    if (defined($parameters{$column}) && $parameters{$column} gt '') {
+      $temp_hash_ref->{$column} = $parameters{$column};
+    }
+  }
+  $rowdata{parameters} = Data::Dumper->Dump( [$temp_hash_ref] );
+
+
+  #### Write the record
+  my $returned_PK = $sbeams->updateOrInsertRow(
+    insert => $insert_flag,
+    update => $update_flag,
+    table_name => "$TB_FORM_TEMPLATE",
+    rowdata_ref => \%rowdata,
+    PK => "form_template_id",
+    PK_value => $PK_value,
+    return_PK => 1,
+    add_audit_parameters => 1,
+    verbose=>0,
+    testonly=>0,
+  );
+
+
+  if ($returned_PK) {
+    my $back_button = $sbeams->getGoBackButton();
+    print qq~
+        <P>
+        <H2>Template Saved</H2>
+        $LINESEPARATOR
+        <P>
+        <TABLE WIDTH=$MESSAGE_WIDTH><TR><TD>
+        The values in the form have been saved.
+        <P>
+        $back_button
+    ~;
+    return;
+  }
+
+
+  print "ERROR: Failed to write template!!!";
+
+
+  return;
+
+} # end saveTemplate
+
+
+###############################################################################
+# deleteTemplate
+#
+###############################################################################
+sub deleteTemplate {
+  #my $self = shift;
+  my %args = @_;
+
+  #### Process the arguments list
+  my $selected_template = $args{'selected_template'} || '';
+  my $program_file_name = $args{'program_file_name'} || '';
+
+  $sbeams->printUserContext();
+
+  #### Make sure a template name was provided
+  unless (defined($selected_template) &&
+          $selected_template gt '') {
+    my $back_button = $sbeams->getGoBackButton();
+    print qq~
+        <P>
+        <H2>Template Delete Error</H2>
+        $LINESEPARATOR
+        <P>
+        <TABLE WIDTH=$MESSAGE_WIDTH><TR><TD>
+        Unable to delete a template because none was selected.
+	Please go back and selecte the template to delete from the list.
+        <P>
+        $back_button
+    ~;
+    return;
+  }
+
+
+  #### Obtain information about the current user
+  $current_contact_id = $sbeams->getCurrent_contact_id;
+
+
+  #### See if this template really exists
+  my $sql = qq~
+    SELECT form_template_id
+      FROM $TB_FORM_TEMPLATE
+     WHERE contact_id = '$current_contact_id'
+       AND program_file_name = '$program_file_name'
+       AND template_name = '$selected_template'
+       AND record_status != 'D'
+  ~;
+  my @form_template_ids = $sbeams-> selectOneColumn($sql);
+  if (scalar(@form_template_ids) == 0) {
+    die("ERROR: No templats found with $sql.".
+        "Please report this error.  It should never happen.");
+  }
+  if (scalar(@form_template_ids) > 1) {
+    die("ERROR: More than one template returned for $sql.".
+        "Please report this error.  It should never happen.");
+  }
+  $sql = "DELETE FROM $TB_FORM_TEMPLATE WHERE form_template_id = '$form_template_ids[0]'";
+  $sbeams->executeSQL($sql);
+
+
+  print qq~
+      <P>
+      <H2>Template Deleted</H2>
+      $LINESEPARATOR
+      <P>
+      <TABLE WIDTH=$MESSAGE_WIDTH><TR><TD>
+      This template has been deleted.  It may still appear in stale
+      Web pages.  REFRESH such pages to make it disappear.
+      <P>
+  ~;
+
+  return;
+
+} # end deleteTemplate
+
+
+
+###############################################################################
+# getTemplateParameters
+#
+###############################################################################
+sub getTemplateParameters {
+  #my $self = shift;
+  my %args = @_;
+
+  #### Process the arguments list
+  my $form_template_id = $args{'form_template_id'} || 0;
+  my $template_name = $args{'template_name'} || '';
+  my $program_file_name = $args{'program_file_name'} || '';
+
+
+  #### Set up a hash for the new parameters
+  my %new_parameters;
+
+  $current_contact_id = $sbeams->getCurrent_contact_id;
+
+
+  #### Try to find this template
+  my $sql;
+
+  #### If a form_template_id was supplied
+  if ($form_template_id) {
+    $sql = qq~
+      SELECT parameters
+        FROM $TB_FORM_TEMPLATE
+       WHERE form_template_id = '$form_template_id'
+         AND record_status != 'D'
+    ~;
+
+  } elsif ($template_name && $program_file_name) {
+    $sql = qq~
+      SELECT parameters
+        FROM $TB_FORM_TEMPLATE
+       WHERE contact_id = '$current_contact_id'
+         AND program_file_name = '$program_file_name'
+         AND template_name = '$template_name'
+         AND record_status != 'D'
+    ~;
+  } else {
+    print "ERROR: Insufficient options specified to getTemplateParameters<BR>";
+    return %new_parameters;
+  }
+
+
+  my @rows = $sbeams-> selectOneColumn($sql);
+  if (scalar(@rows) == 0) {
+    print "ERROR: Unable to find template '$template_name'<BR>";
+    return %new_parameters;
+  }
+  if (scalar(@rows) > 1) {
+    print "ERROR: Too many rows returned for '$sql'<BR>";
+    return %new_parameters;
+  }
+
+  #### eval the result.  This is potentially nasty.
+  my $VAR1;
+  eval $rows[0];
+  my $new_parameters_ref;
+  %{$new_parameters_ref} = %{$VAR1};
+
+  return %{$new_parameters_ref};
+
+}
+
+#+
+# Wrapper for sbeams method to check the project association the object being
+# considered.  Fetches prebuilt SQL stmts from TableInfo.pm and interpolates 
+# appropriate keys into them, then passes call on to checkProjectPermissions(),
+# an sbeams method in Connection/Permissions.pm
+# @narg action - SQL action, one of INSERT/UPDATE
+# @narg tname  - sbeams module-prefixed table name
+# @narg fkey   - name of foreign key field used for project lookup
+# @narg fval   - value of that foreign key
+# 
+# returns error string if error is found, else empty string
+#-
+sub checkPermission {
+  my %args = @_;
+
+# Parameter checking 
+
+  # Action must be one of insert/delete
+  if ( !$args{action} ) { 
+    print STDERR "Undefined action mode!\n";
+    return undef;
+  } elsif ( lc( $args{action} ) !~ /insert|update/ ) { 
+    print STDERR "Unknown action mode $args{action}\n";
+    return undef;
+  }
+
+  # Must specify these 
+  foreach( qw( tname fkey fval ) ) {
+    if ( !$args{$_} ) {
+      print STDERR "Missing parameter $_\n";
+      return undef;
+    }
+  }
+
+  # If updating, primary key is required 
+  if ( !$args{pval} && lc( $args{action} ) eq 'update' ) {
+    print STDERR "Need primary key when updating $args{tname} table\n";
+    return undef;
+  }
+
+  # Fetch projectPermissionSQL 
+  my $prSQL = $sbeamsMOD->returnTableInfo( $args{tname}, 'projPermSQL' );
+  unless ( ref( $prSQL ) && ref( $prSQL ) eq 'HASH' ) {
+    print STDERR "No project permission SQL defined for $args{tname}\n";
+    return undef;
+  }
+
+### Loops to support sbeams multi and range inserts
+
+  my @fvals;
+  if ( $args{fval} !~ /^[\-\,0-9]+$/ ) { # Illegal specifier
+    $log->error( "Illegal argument string: $args{fval}" );
+    die ( "Unable to complete requested operation: $args{fval}" );
+  } else {
+    $args{fval} =~ s/\-/\.\./g;
+    @fvals = eval $args{fval};
+    $log->debug( "Converted $args{fval} to " . join( "::", @fvals ) );
+  }
+
+  foreach my $fval ( @fvals ) {
+    # Need to interpolate fval info prsql->{fsql} unless fkey is project_id.
+    if ( lc($args{fkey}) ne 'project_id' ) {
+      $prSQL->{fsql} =~ s/KEYVAL/$fval/g;
+      $prSQL->{fsql} = evalSQL( $prSQL->{fsql} );
+    }
+
+    # If update, must also interpolate pkey into dbsql
+    if ( lc( $args{action} ) =~ /update/ ) { 
+      $prSQL->{dbsql} =~ s/KEYVAL/$args{pval}/g;
+      $prSQL->{dbsql} = evalSQL( $prSQL->{dbsql} );
+    }
+    
+    # Make call to sbeams method
+    my $errstr = $sbeams->checkProjectPermission( action => $args{action},
+                                                  tname  => $args{tname},
+                                                  fkey   => $args{fkey},
+                                                  fval   => $fval,
+                                                  fsql   => $prSQL->{fsql},
+                                                  dbsql  => $prSQL->{dbsql}
+                                                );
+
+    return ( $errstr ) if $errstr;
+  }
+  return;
+}
+
+#+ 
+# Special case of routine above, for when the table in question has project_id
+# as a foreign-key field, as opposed to having a foreign-key field that in turn
+# has or can be linked to a project_id.  This simplifies the crafting of the
+# relevant SQL.  This is dangerously named insofar as it is the same name as 
+# the $sbeams object method in SBEAMS::Connection::Permissions.
+#
+# narg: param_ref  Required, reference to form parameters (includes project_id)
+# ret:             Error string if any, else undef.
+# 
+sub checkProjectPermission {
+  my %args = @_;
+  
+  for my $param ( qw( param_ref tname dbtname ) ) {
+    die "Missing required parameter $param" unless $args{$param};
+  }
+
+  # Simplify
+  my %params = %{$args{param_ref}};
+
+  # We only need the dbsql if we're doing an update.
+  my $dbsql = 'SELECT';  # placeholder
+
+  if ( uc($params{action}) eq 'UPDATE' ) {
+    my ($pkcol) = $sbeamsMOD->returnTableInfo( $args{tname}, 'PK_COLUMN_NAME' );
+    # This will break on a string primary key...
+    $dbsql = evalSQL( <<"    END" );
+    SELECT project_id FROM $args{dbtname}
+    WHERE $pkcol = $params{$pkcol}
+    END
+  }
+
+  # Make call to sbeams method
+  my $errstr = $sbeams->checkProjectPermission( action => $params{action}, 
+                                                tname  => $args{tname},
+                                                fkey   => 'project_id',
+                                                fval   => $params{project_id},
+                                                fsql   => '',
+                                                dbsql  => $dbsql
+                                                );
+
+  return ( $errstr ) if $errstr;
+
+}
+
+sub evalSQL {
+  my $sql = shift;
+  return eval "\"$sql\"";
+}
+
+#+
+# Prints form/hidden params to allow privilege check to work.
+#-
+sub getWorkGroupJavascript {
+  my $groupRef = shift;
+  my $table = shift;
+
+  for( $groupRef, $table ) {
+    die "Missing required parameter" unless $_;
+  }
+  
+  my ( $tgroup ) = $sbeams->selectOneColumn( <<"  END_QUERY" );
+  SELECT table_group
+  FROM $TB_TABLE_PROPERTY 
+  WHERE table_name = '$table'
+  END_QUERY
+
+  my %perms = $sbeams->getPrivilegeNames();
+  my $hidden = "<INPUT TYPE=HIDDEN NAME=table_name VALUE=$table>";
+  $hidden .= "<INPUT TYPE=HIDDEN NAME=table_group VALUE=$tgroup>";
+
+  # Calc window dimensions
+  my $height = ( scalar( @$groupRef ) ) ? scalar( @$groupRef ) * 25 + 175 : 200;
+  my $width = 30;
+#my $height = scalar( @$groupRef ) * 25 + 175;
+#my $width = 0;
+
+  foreach my $grp ( @$groupRef ) {
+    $hidden .= "<INPUT TYPE=HIDDEN NAME=groupinfo VALUE='" . join( ':::', @$grp ) . "'>\n";
+    my $currwidth = length( join( '...', @$grp, $perms{$$grp[2]} ) );
+    $width = ( $width < $currwidth ) ? $currwidth : $width;
+    }
+  $width *= 10;
+
+  return( <<"  END" );
+  <SCRIPT LANGUAGE="JavaScript">
+  <!--
+   function openGroupWindow() {
+     helpwin = window.open('about:blank','groupHelpWin','width=$width,height=$height,resizable=yes,scrollbars=yes');
+     helpwin.focus();
+                               }
+  //-->
+  </SCRIPT>
+  <FORM NAME="groupHelp" ACTION='$HTML_BASE_DIR/cgi/help_popup.cgi' TARGET="groupHelpWin">
+  $hidden
+  </FORM>
+  END
+
+}
+
+
+#+
+# Returns best permission afforded by any of the groups, *excluding* Admin.
+#-
+sub getBestGroupPermission {
+  my $groupref = shift;
+  my $min = 999;
+  foreach my $group ( @{$groupref} ) {
+#$log->warn( "Group is $$group[0], best is $min");
+    next if $$group[0] =~ /^Admin$/i;
+    $min = ( $$group[2] > $min ) ? $min : $$group[2];
+  }
+  return $min;
+}
+
+sub addPrivilegeError {
+  my $errors = shift;
+  my $link = shift;
+  my $table = shift;
+  push @$errors, <<"  END_ERR";
+  Review your privileges on this table ($table): $link
+  END_ERR
+}
+
+
+###############################################################################
+###############################################################################
+###############################################################################
+1;
