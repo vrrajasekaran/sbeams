@@ -1,0 +1,106 @@
+Notes on using/development of scripts for SBEAMS::Microarray
+
+
+    ###########################
+   ##   load_conditions.pl  ##
+#####################################################################
+Purpose: loads .sig file data into the 'condition' and 'gene_expression' tables
+
+You should only need to specificy a project id for this script.  When invoked, it should check the /net/arrays/Pipeline/output/project_id/<id> directory for any .sig files.  Upon finding one, it loads the lambdas, ratios, etc. into the gene_expression table and makes a new 'condition' record.  
+
+Typical usage:
+./load_conditions.pl --project_id 166
+
+    ################################
+   ##   load_biosequence_set.pl  ##
+#####################################################################
+Purpose: load_biosequence_set.pl is a script to populate the biosequence table.  
+
+This script requires that the biosequence_set table is populated with the correct information.  This was done by using ManageTable.cgi and manually adding each biosequence set.  Once the biosequence set is defined, look at the command line usage ("./load_biosequence_set.pl --help") for options.  It is recommended to begin by using the option "--testonly" to ensure that everything is getting assigned correctly.  Once you have verified that everything is working correctly, run it without the "--testonly" flag.
+
+
+Typical usage:
+./load_biosequence_set.pl  --update_existing --verbose 2
+
+
+
+
+    ##############################
+   ##  load_array_elements.pl  ##
+#####################################################################
+Purpose: load_array_elements.pl is a script to populate the array_element table.
+
+This script adds the map/key file information to SBEAMS::Microarray.  While it doesn't need the corresponding biosequences to exist, it is advantageous to put them in first.  To add the biosequences, see load_biosequence_set.pl.  
+
+Typical usage:
+./load_array_elements.pl --update_existing 
+
+
+
+
+     ################################
+    ## load_quantitation_file.pl  ##
+#####################################################################
+Purpose: load_quantitation_file.pl places the quantitation data in the database.
+
+This script populates many fields related to the quantitation file.  It requires that you know the scan image file, quantitation file, array id, and protocols for scanning and spotfinding.  These are all used on the command line and the options are visible using the "--help" flag.  Future goals will be to trim this list down to only those items that are necessary.  The following tables are populated or used:
+
+-server
+-file_path
+-file_location
+-file_type
+-quantitation_type
+-scan_element_quantitation
+-scan_element
+-scan_quantitation
+-array_channel_scan
+-channel
+
+Typical usage:
+./load_quantitation_file --scan_file ~/scan_test.tif \
+	                 --scan_protocol_id 4
+	                 --quantitation_file ~/quantitation_file.csv \
+                         --quantitation_protocol_id 12 \
+                         --array_id 4363
+
+     ################################
+    ## load_affy_array_files.pl ##
+#####################################################################
+Purpose: load_affy_array_files.pl Inserts data about Affy arrays and samples into the database.  The script will monitor a default
+directory and upload any new files that meet the current minimum for the amount of data needed.
+
+The script can be run in three different modes
+add_new: Will just add new arrays plus the sample information
+update:  Given a method name(s) it will update that piece of data for all Affy arrays or Samples in the database
+delete:  Given a root_file name(s) it will delete that array or the array and sample plus any data in the associated protocol linking
+	 table.  Also can delete the full database if needed....
+	 
+Run the script for a more detailed list of options
+Typical usage 
+./load_affy_array_files.pl  --run_mode add_new
+Writes out a new error log every time the script is ran called 'AFFY_ERROR_LOG.txt' 
+
+  ################################
+    ## load_affy_R_CHP_files.pl ##
+#####################################################################
+Purpose: Convert Affymetrix CEL files into R_CHP files and load the data into the database.  An R_CHP file is produced by running
+R/Bioconductor and utilizing the R library "affy" algorithms mas5.  
+
+The script can be run in two different modes with a few options
+add_new ./load_affy_R_CHP_files.pl --run_mode add_new 			 # typical mode, adds any new files
+update  ./load_affy_R_CHP_files.pl --run_mode update --redo_R yes or no	 # Re upload the data and or re-compute the R run
+update  ./load_affy_R_CHP_files.pl --run_mode update --redo_R yes or no --files 123,124,134 
+
+Typical usage.  Looks for any arrays that do not have an R_CHP file, Runs R and then parses the output and puts into SBEAMS 
+./load_affy_R_CHP_files.pl --run_mode add_new 
+
+ ################################
+    ## Pre_process_affy_info_file.pl ##
+#####################################################################
+Purpose: Parse a tab delimited file holding information about CEL files and samples to be loaded in to SBEAMS.  
+Script will make a INFO file for each CEL file listed in the master info file. The reason to make INFO files is the 
+script load_affy_array_files.pl will load a CEL if it also has a *.INFO file or XML.  
+This will most likely be the method of choice to upload external data sets.
+
+
+Typical usage.  ./Pre_process_affy_info_file.pl --run_mode make_new --info_file give/path_to_file/info.txt

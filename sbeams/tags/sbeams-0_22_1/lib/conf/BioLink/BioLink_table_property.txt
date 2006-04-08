@@ -1,0 +1,21 @@
+table_name	Category	table_group	manage_table_allowed	db_table_name	PK_column_name	multi_insert_column	table_url	manage_tables	next_step
+BL_biosequence_set	BioSequence Set	BioLink_infrastructure	YES	$TBBL_BIOSEQUENCE_SET	biosequence_set_id		ManageTable.cgi?TABLE_NAME=BL_biosequence_set	BL_biosequence_set	
+BL_dbxref	Biosequence Database Cross Reference	BioLink_infrastructure	YES	$TBBL_DBXREF	dbxref_id		ManageTable.cgi?TABLE_NAME=BL_dbxref	BL_dbxref	
+BL_biosequence	BioSequence	BioLink_infrastructure	YES	$TBBL_BIOSEQUENCE	biosequence_id		ManageTable.cgi?TABLE_NAME=BL_biosequence	BL_biosequence	
+BL_biosequence_property_set	BioSequence Property Set	BioLink_infrastructure	NO	$TBBL_BIOSEQUENCE_PROPERTY_SET	biosequence_property_set_id				
+BL_biosequence_annotation	Biosequence Annotation	BioLink_project	YES	$TBBL_BIOSEQUENCE_ANNOTATION	biosequence_annotation_id		ManageTable.cgi?TABLE_NAME=BL_biosequence_annotation		
+BL_query_option	Query Option	BioLink_infrastructure	YES	$TBBL_QUERY_OPTION	query_option_id		ManageTable.cgi?TABLE_NAME=BL_query_option	BL_query_option	
+BL_polymer_type	Polymer Type	BioLink_infrastructure	YES	$TBBL_POLYMER_TYPE	polymer_type_id		ManageTable.cgi?TABLE_NAME=BL_polymer_type	BL_polymer_type	
+BL_evidence_source	Evidence Source	BioLink_infrastructure	YES	$TBBL_EVIDENCE_SOURCE	evidence_source_id		ManageTable.cgi?TABLE_NAME=BL_evidence_source	BL_evidence_source	
+BL_evidence	Evidence	BioLink_infrastructure	YES	$TBBL_EVIDENCE	evidence_id		ManageTable.cgi?TABLE_NAME=BL_evidence	BL_evidence	
+BL_relationship_type	Relationship Type	BioLink_infrastructure	YES	$TBBL_RELATIONSHIP_TYPE	relationship_type_id		ManageTable.cgi?TABLE_NAME=BL_relationship_type	BL_relationship_type	
+BL_relationship	Relationship	BioLink_infrastructure	YES	$TBBL_RELATIONSHIP	relationship_id		ManageTable.cgi?TABLE_NAME=BL_relationship	BL_relationship	
+BL_cbil_genome_coordinates	cbil_genome_coordinates	BioLink_infrastructure	NO	$TBBL_CBIL_GENOME_COORDINATES	Coordinate_id				
+BL_BrowseBioSequence	Browse BioSequence	QUERY	NO				BrowseBioSequence.cgi		
+BL_MGEDOntologyRelationship	MGED Ontology RelationShip	BioLink_infrastructure	NO	$TBBL_MGED_ONTOLOGY_RELATIONSHIP	MGED_ontology_relationship_id				
+BL_MGEDOntologyTerm	MGED Ontology Term	BioLink_infrastructure	NO	$TBBL_MGED_ONTOLOGY_TERM	MGED_ontology_term_id				
+BL_OntologyRelationshipType	Ontology Relationship Type	BioLink_infrastructure	NO	$TBBL_ONTOLOGY_RELATIONSHIP_TYPE	ontology_relationship_type_id				
+BL_OntologyTermType	Ontology Term Type	BioLink_infrastructure	NO	$TBBL_ONTOLOGY_TERM_TYPE	ontology_term_type_id				
+BL_data_object	Data Object	BioLink_infrastructure	YES	$TBBL_DATA_OBJECT	data_object_id		ManageTable.cgi?TABLE_NAME=BL_data_object	BL_data_object	
+BL_data_object_type	Data Object Type	BioLink_infrastructure	YES	$TBBL_DATA_OBJECT_TYPE	data_object_type_id		ManageTable.cgi?TABLE_NAME=BL_data_object_type	BL_data_object	
+BL_hypothesis	Hypothesis	BioLink_infrastructure	YES	$TBBL_HYPOTHESIS	hypothesist_id		ManageTable.cgi?TABLE_NAME=BL_hypothesis	BL_data_object	

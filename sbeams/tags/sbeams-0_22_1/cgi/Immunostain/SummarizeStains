@@ -1,0 +1,1169 @@
+#!/usr/local/bin/perl -w
+
+###############################################################################
+# Program     : SummarizeStains
+# Author      : Eric Deutsch <edeutsch@systemsbiology.org>
+# $Id$
+#
+# Description : This program that allows users to
+#               browse through a summary of immunostain results.
+#
+# SBEAMS is Copyright (C) 2000-2005 Institute for Systems Biology
+# This program is governed by the terms of the GNU General Public License (GPL)
+# version 2 as published by the Free Software Foundation.  It is provided
+# WITHOUT ANY WARRANTY.  See the full description of GPL terms in the
+# LICENSE file distributed with this software.
+#
+###############################################################################
+
+
+###############################################################################
+# Set up all needed modules and objects
+###############################################################################
+use strict;
+use Getopt::Long;
+use FindBin;
+
+use lib "$FindBin::Bin/../../lib/perl";
+use vars qw ($sbeams $sbeamsMOD $q $current_contact_id $current_username
+	           %hash_to_sort
+             $PROG_NAME $USAGE %OPTIONS $QUIET $VERBOSE $DEBUG $DATABASE
+             $TABLE_NAME $PROGRAM_FILE_NAME $CATEGORY $DB_TABLE_NAME
+             @MENU_OPTIONS);
+
+use SBEAMS::Connection qw($log);
+use SBEAMS::Connection::Settings;
+use SBEAMS::Connection::Tables;
+
+use SBEAMS::BioLink::Tables;
+
+use SBEAMS::Ontology::Tables;
+use SBEAMS::Ontology::TableInfo;
+
+use SBEAMS::Immunostain;
+use SBEAMS::Immunostain::Settings;
+use SBEAMS::Immunostain::Tables;
+
+use SBEAMS::Connection::DataTable;
+
+$sbeams = new SBEAMS::Connection;
+$sbeamsMOD = new SBEAMS::Immunostain;
+$sbeamsMOD->setSBEAMS($sbeams);
+$sbeams->setSBEAMS_SUBDIR($SBEAMS_SUBDIR);
+
+use CGI;
+$q = new CGI;
+
+use constant WEIGHTING_FACTOR => 0.1;
+
+###############################################################################
+# Set program name and usage banner for command like use
+###############################################################################
+$PROG_NAME = $FindBin::Script;
+$USAGE = <<EOU;
+Usage: $PROG_NAME [OPTIONS] key=value key=value ...
+Options:
+  --verbose n         Set verbosity level.  default is 0
+  --quiet             Set flag to print nothing at all except errors
+  --debug n           Set debug flag
+
+ e.g.:  $PROG_NAME [OPTIONS] [keyword=value],...
+
+EOU
+
+#### Process options
+unless (GetOptions(\%OPTIONS,"verbose:s","quiet","debug:s")) {
+  print "$USAGE";
+  exit;
+}
+
+$VERBOSE = $OPTIONS{"verbose"} || 0;
+$QUIET = $OPTIONS{"quiet"} || 0;
+$DEBUG = $OPTIONS{"debug"} || 0;
+if ($DEBUG) {
+  print "Options settings:\n";
+  print "  VERBOSE = $VERBOSE\n";
+  print "  QUIET = $QUIET\n";
+  print "  DEBUG = $DEBUG\n";
+}
+
+
+###############################################################################
+# Set Global Variables and execute main()
+###############################################################################
+main();
+exit(0);
+
+
+###############################################################################
+# Main Program:
+#
+# Call $sbeams->Authenticate() and exit if it fails or continue if it works.
+###############################################################################
+sub main {
+
+  #### Do the SBEAMS authentication and exit if a username is not returned
+  exit unless ($current_username = $sbeams->Authenticate(
+    permitted_work_groups_ref=>['Immunostain_user','Immunostain_admin',
+      'Immunostain_readonly','Admin'],
+    allow_anonymous_access=>1,
+    #connect_read_only=>1,
+  ));
+
+
+  #### Read in the default input parameters
+  my %parameters;
+  my $n_params_found = $sbeams->parse_input_parameters(
+    q=>$q,parameters_ref=>\%parameters);
+  #$sbeams->printDebuggingInfo($q);
+  
+
+
+  #### Process generic "state" parameters before we start
+  $sbeams->processStandardParameters(parameters_ref=>\%parameters);
+
+  #### Decide what action to take based on information so far
+  if (defined($parameters{action}) && $parameters{action} eq "???") {
+    # Some action
+  } else {
+    $sbeamsMOD->display_page_header() if !$parameters{exprTabMode};
+    handle_request(ref_parameters=>\%parameters);
+    $sbeamsMOD->display_page_footer();
+  }
+
+
+} # end main
+
+
+
+###############################################################################
+# Handle Request
+###############################################################################
+sub handle_request {
+  my %args = @_;
+
+
+  #### Process the arguments list
+  my $ref_parameters = $args{'ref_parameters'}
+    || die "ref_parameters not passed";
+  my %parameters = %{$ref_parameters};
+=comment  
+foreach my $p (keys %parameters)
+{
+		print "$p =====  $parameters{$p}<br>";
+}
+=cut
+  #### Define some generic varibles
+  my ($i,$element,$key,$value,$line,$result,$sql);
+
+
+  #### Define some variables for a query and resultset
+  my %resultset = ();
+  my $resultset_ref = \%resultset;
+  my (%url_cols,%hidden_cols,%max_widths,$show_sql);
+
+
+  #### Read in the standard form values
+  my $apply_action=$parameters{'action'} || $parameters{'apply_action'} || '';
+  my $TABLE_NAME = $parameters{'QUERY_NAME'};
+
+
+  #### Set some specific settings for this program
+  #my $CATEGORY="Browse Protein Summary";
+  my $CATEGORY="Summarize Staining Results";
+  $TABLE_NAME="IS_SummarizeStains" unless ($TABLE_NAME);
+  ($PROGRAM_FILE_NAME) =
+    $sbeamsMOD->returnTableInfo($TABLE_NAME,"PROGRAM_FILE_NAME");
+  my $base_url = "$CGI_BASE_DIR/$SBEAMS_SUBDIR/$PROGRAM_FILE_NAME";
+
+
+  #### Get the columns and input types for this table/query
+  my @columns = $sbeamsMOD->returnTableInfo($TABLE_NAME,"ordered_columns");
+  my %input_types = 
+    $sbeamsMOD->returnTableInfo($TABLE_NAME,"input_types");
+
+
+  #### Read the input parameters for each column
+  my $n_params_found = $sbeams->parse_input_parameters(
+    q=>$q,parameters_ref=>\%parameters,
+    columns_ref=>\@columns,input_types_ref=>\%input_types);
+
+  #### If the apply action was to recall a previous resultset, do it
+  my %rs_params = $sbeams->parseResultSetParams(q=>$q);
+  my @resultset_column_titles = ();
+  if ($apply_action eq "VIEWRESULTSET" || $parameters{exprTabMode} ) {
+    $sbeams->readResultSet(
+      resultset_file=>$rs_params{set_name},
+      resultset_ref=>$resultset_ref,
+      query_parameters_ref=>\%parameters,
+      resultset_params_ref=>\%rs_params,
+      column_titles_ref=>\@resultset_column_titles,
+    );
+    $n_params_found = 99;
+  }
+
+  # HACK! Have to intercede because page wants to print out headers and
+  # javascript on the sly, so we have to intercede.
+  if ( $ref_parameters->{exprTabMode} ) {
+#   This was lopped off by the nasty parseResultsSetParams method...
+    $parameters{exprTabMode} = $ref_parameters->{exprTabMode};
+    #### Post process the resultset
+    my $cytoscape = { template => 'SummarizeStains' };
+    postProcessResultset(
+      rs_params_ref=>\%rs_params,
+      resultset_ref=>$resultset_ref,
+      query_parameters_ref=>\%parameters,
+      column_titles_ref=>\@resultset_column_titles,
+      cytoscape=>$cytoscape,
+    );
+    # Thats all folks...
+    exit;
+  }
+
+
+  #### Set some reasonable defaults if no parameters supplied
+  unless ($n_params_found) {
+    $parameters{input_form_format} = "minimum_detail";
+  }
+
+
+  #### Apply any parameter adjustment logic
+
+  # Make weighting factor be passed value else default.
+  $parameters{weighting_factor} = ( defined $parameters{weighting_factor} ) ? 
+                              $parameters{weighting_factor} : WEIGHTING_FACTOR;
+
+  #### Display the user-interaction input form
+  $sbeams->display_input_form(
+    TABLE_NAME=>$TABLE_NAME,CATEGORY=>$CATEGORY,apply_action=>$apply_action,
+    PROGRAM_FILE_NAME=>$PROGRAM_FILE_NAME,
+    parameters_ref=>\%parameters,
+    input_types_ref=>\%input_types,
+    onSubmit => 'ONSUBMIT="return checkform();"'
+  );
+
+
+
+  if ( $apply_action eq 'QUERYHIDE' ) {
+    # Kluge McDuck
+    print "<FONT SIZE=+1>Show <INPUT TYPE='submit' NAME='action' VALUE='QUERY'> options.</FONT></FORM>";
+  } else {
+
+  #### Display the form action buttons
+  $sbeams->display_form_buttons(TABLE_NAME=>$TABLE_NAME);
+
+
+  #### Finish the upper part of the page and go begin the full-width
+  #### data portion of the page
+  $sbeams->display_page_footer(close_tables=>'YES',
+  separator_bar=>'YES',display_footer=>'NO')
+  }
+
+
+
+  #########################################################################
+  #### Process all the constraints
+
+  #### Build PROJECT constraint
+  my $project_clause = $sbeams->parseConstraint2SQL(
+    constraint_column=>"SS.project_id",
+    constraint_type=>"int_list",
+    constraint_name=>"Projects",
+    constraint_value=>$parameters{project_id} );
+  return if ($project_clause eq '-1');
+
+  #### Build ORGANISM constraint
+  my $organism_clause = $sbeams->parseConstraint2SQL(
+    constraint_column=>"SDO.organism_id",
+    constraint_type=>"int_list",
+    constraint_name=>"Organism",
+    constraint_value=>$parameters{organism_id} );
+  return if ($organism_clause eq '-1');
+
+  #### Build TISSUE_TYPE constraint
+  my $tissue_type_clause = $sbeams->parseConstraint2SQL(
+    constraint_column=>"S.tissue_type_id",
+    constraint_type=>"int_list",
+    constraint_name=>"Tisuue Type",
+    constraint_value=>$parameters{tissue_type_id} );
+  return if ($tissue_type_clause eq '-1');
+	
+  #### Build SPECIMEN_BLOCK constraint
+  my $specimen_block_clause = $sbeams->parseConstraint2SQL(
+    constraint_column=>"SS.specimen_block_id",
+    constraint_type=>"int_list",
+    constraint_name=>"Specimen Blocks",
+    constraint_value=>$parameters{specimen_block_id} );
+  return if ($specimen_block_clause eq '-1');
+
+
+  #### Build GENOME_COORINATES constraint
+  if ($parameters{genome_coordinates_constraint}) {
+    my $antibodies = convertGenomeCoordinates(
+      genome_coordinates => $parameters{genome_coordinates_constraint},
+    );
+    return if ($antibodies eq '-1');
+    $parameters{antibody_id} = $antibodies if ($antibodies gt '');
+  }
+
+
+  #### Build ANTIBODY constraint
+  my $antibody_clause = $sbeams->parseConstraint2SQL(
+    constraint_column=>"AC.antibody_id",
+    constraint_type=>"int_list",
+    constraint_name=>"Antibodies",
+    constraint_value=>$parameters{antibody_id} );
+  return if ($antibody_clause eq '-1');
+
+  #### Build Probe constraint
+  my $probe_clause = $sbeams->parseConstraint2SQL(
+    constraint_column=>"P.probe_id",
+    constraint_type=>"int_list",
+    constraint_name=>"Probes",
+    constraint_value=>$parameters{probe_id} );
+  return if ($probe_clause eq '-1');
+  
+  #### Build CELL TYPE constraint
+  my $cell_type_clause = $sbeams->parseConstraint2SQL(
+    constraint_column=>"CT.structural_unit_id",
+    constraint_type=>"int_list",
+    constraint_name=>"Cell Types",
+    constraint_value=>$parameters{structural_unit_id} );
+  return if ($cell_type_clause eq '-1');
+
+
+  #### Build SORT ORDER
+  my $order_by_clause = "";
+  if ($parameters{sort_order}) {
+    if ($parameters{sort_order} =~ /SELECT|TRUNCATE|DROP|DELETE|FROM|GRANT/i) {
+      print "<H4>Cannot parse Sort Order!  Check syntax.</H4>\n\n";
+      return;
+    } else {
+      $order_by_clause = " ORDER BY $parameters{sort_order}";
+    }
+  }
+
+
+  #### Build ROWCOUNT constraint
+  $parameters{row_limit} = 50000
+    unless (defined($parameters{row_limit}) &&
+            $parameters{row_limit} > 0 && $parameters{row_limit}<=1000000);
+  my $limit_clause = $sbeams->buildLimitClause(
+   row_limit=>$parameters{row_limit});
+
+
+  #### Define some variables needed to build the query
+  my $group_by_clause = "";
+  my $final_group_by_clause = "";
+  my @column_array;
+  my $peptide_column = "";
+  my $count_column = "";
+
+
+  #### Define the desired columns in the query
+  #### [friendly name used in url_cols,SQL,displayed column title]
+
+  #### If grouping by ?
+  if ( 0 ) {
+    # Not supported yet
+
+  #### If no grouping
+  } else {
+    @column_array = (
+      ["assay_id","SS.assay_id","assay_id"],
+      ["assay_name","SS.assay_name","Stain Name"],
+      ["antibody_name","A.antibody_name","Antibody"],
+      ["refseq_accession","BSRSA.best_RefSeqID","RefSeq Accession"],
+			["antibody_id", "A.antibody_id", "antibody_id"],
+      ["structural_unit_name","CT.structural_unit_name","Cell Type"],
+			["structural_unit_id", "CT.structural_unit_id", "cell_type_id"],
+      ["intense_percent","SCP1.at_level_percent","Percent Intense"],
+      ["equivocal_percent","SCP2.at_level_percent","Percent Equivocal"],
+      ["none_percent","SCP3.at_level_percent","Percent None"],
+      ["antibody_sort_order","A.sort_order","antibody_sort_order"],
+      ["structural_unit_sort_order","CT.sort_order","cell_type_sort_order"],
+	  ["cancer_amount_cc", "cast(cancer_amount_cc as varchar)", "Amount of Cancer (cc)"],
+	  ["gleason3 tumor", "cast(SCP1.percent_type_term_id as varchar)", "Tumor Type Percent"],
+	  ["organism_name","SDO.organism_name", "Organism Name"],
+    ["organism_id", "SDO.organism_id", "organism_id"],
+	["tissue_type_id", "TT.tissue_type_id", "tissue_type_id"],			
+	["tissue_type_name", "TT.tissue_type_name", "Tissue Type"],			
+    );
+  }
+ # ["gleason3 tumor", "cast(SCP1.cell_type_percent as varchar)", "Tumor Type Percent"],
+#	  ["organism_id","SDO.organism_id", "organism_id"],
+
+  #### Set flag to display SQL statement if user selected
+  if ( defined($parameters{display_options}) &&
+       $parameters{display_options} =~ /ShowSQL/ ) {
+    $show_sql = 1;
+  }
+
+
+  #### Build the columns part of the SQL statement
+  my %colnameidx = ();
+  my @column_titles = ();
+  my $columns_clause = $sbeams->build_SQL_columns_list(
+    column_array_ref=>\@column_array,
+    colnameidx_ref=>\%colnameidx,
+    column_titles_ref=>\@column_titles
+  );
+  
+  # This particular abomination results from how tissue types and structural units
+  # are related within the schema.  Struct units have no intrinsic tissue type,
+  # and in the cases delineated below the struct_units are represented in more
+  # than one tissue type (via specimen->sp_block->assay->assay_channel->auexp)
+  # This code allows them to separate and be sorted correctly. 
+  my $struct_unit_case =<<"  END_CASE";
+  CASE WHEN tissue_type_name LIKE '%Bladder%' AND CT.structural_unit_name = 'Stromal endothelial cells'
+            THEN CT.sort_order - 75
+       WHEN tissue_type_name LIKE '%Prostate%' AND CT.structural_unit_name = 'Basal epithelial cells'
+            THEN CT.sort_order + 110
+       ELSE CT.sort_order 
+  END AS structural_unit_sort_order
+  END_CASE
+
+  # HACK! Separate Basal Epithelial populations between Prostate and Bladder
+  $columns_clause =~ s/CT.sort_order AS \"structural_unit_sort_order\"/$struct_unit_case/;
+
+  #### Define the SQL statement
+  $sql = qq~
+	SELECT $limit_clause->{top_clause} $columns_clause
+	  FROM $TBIS_ASSAY SS
+		LEFT JOIN $TBIS_SPECIMEN_BLOCK SB 
+			ON SS.specimen_block_id = SB.specimen_block_id 
+		LEFT JOIN $TBIS_SPECIMEN S 
+			ON SB.specimen_id = S.specimen_id 
+		LEFT JOIN SBEAMS.DBO.ORGANISM SDO 
+			ON S.organism_id = SDO.organism_id
+		LEFT JOIN $TBIS_TISSUE_TYPE TT
+			ON S.tissue_type_id = TT.tissue_type_id
+		LEFT JOIN $TBIS_ASSAY_CHANNEL AC
+			ON SS.assay_id = AC.assay_id
+		LEFT JOIN $TBIS_ASSAY_UNIT_EXPRESSION SCP1
+	       ON ( AC.assay_channel_id = SCP1.assay_channel_id AND SCP1.expression_level_id = 1 )
+		LEFT JOIN $TBIS_STRUCTURAL_UNIT  CT ON ( SCP1.STRUCTURAL_UNIT_ID = CT.structural_unit_id )
+		LEFT JOIN $TBIS_ASSAY_UNIT_EXPRESSION SCP2
+	       ON ( AC.assay_channel_id = SCP2.assay_channel_id AND SCP2.expression_level_id = 2 AND SCP2.structural_unit_id = SCP1.structural_unit_id)
+		LEFT JOIN $TBIS_ASSAY_UNIT_EXPRESSION SCP3
+	       ON ( AC.assay_channel_id = SCP3.assay_channel_id AND SCP3.expression_level_id = 3 AND SCP3.structural_unit_id  = SCP1.structural_unit_id)
+	INNER JOIN $TBIS_ANTIBODY A ON ( AC.antibody_id = A.antibody_id )
+	  LEFT JOIN $TBIS_ANTIGEN AG ON ( A.antigen_id = AG.antigen_id )
+	  LEFT JOIN $TBIS_BIOSEQUENCE BS ON ( AG.biosequence_id = BS.biosequence_id )
+	  LEFT JOIN $TBIS_BIOSEQUENCE_REFSEQ_ASSOCIATION BSRSA ON ( BS.biosequence_accession = BSRSA.LocusLinkID )
+	 WHERE 1 = 1
+	$project_clause
+	$specimen_block_clause
+	$antibody_clause
+	$cell_type_clause
+	$organism_clause
+	$tissue_type_clause
+	$group_by_clause
+	 ORDER BY A.sort_order, SS.assay_name,CT.sort_order
+	$limit_clause->{trailing_limit_clause}
+
+  ~;
+
+  #### Certain types of actions should be passed to links
+  my $pass_action = "QUERY";
+  $pass_action = $apply_action if ($apply_action =~ /QUERY/i); 
+
+
+  #### Pass nearly all of the constraints down to a child query
+  my @parameters_to_pass;
+  my $parameters_list = '';
+  while ( ($key,$value) = each %input_types ) {
+    if ($key ne 'sort_order' && $key ne 'display_options' &&
+        $key ne 'reference_constraint') {
+      if ($parameters{$key}) {
+        push(@parameters_to_pass,"$key=$parameters{$key}");
+      }
+    }
+  }
+  if (@parameters_to_pass) {
+    $parameters_list = join('&',@parameters_to_pass);
+  }
+
+
+  #### Define the hypertext links for columns that need them
+
+  %url_cols = ('Stain Name' => "$CGI_BASE_DIR/Immunostain/ManageTable.cgi?TABLE_NAME=IS_assay&assay_id=\%$colnameidx{assay_id}V",
+    	       'Stain Name_ATAG' => 'TARGET="Win2" ONMOUSEOVER="window.status=\'Show more information about this slide\'; return true"',
+
+   	       'Antibody' => "processAntibody.cgi?action=ab_details&antibody_id=\%$colnameidx{antibody_id}V",
+  	       'Antibody_ATAG' => 'TARGET="Win2" ONMOUSEOVER="window.status=\'Show summary of information for this antibody\'; return true"',
+
+    	       'RefSeq Accession' => "http://www.ncbi.nlm.nih.gov/entrez/query.fcgi?db=protein&term=\%V",
+    	       'RefSeq Accession_ATAG' => 'TARGET="Win2" ONMOUSEOVER="window.status=\'Show NCBI entry for this RefSeq identifier\'; return true"',
+
+    	       'Cell Type' => "$CGI_BASE_DIR/$SBEAMS_SUBDIR/ManageTable.cgi?TABLE_NAME=IS_structural_unit&Structural_unit_id=\%$colnameidx{structural_unit_id}V",
+    	       'Cell Type_ATAG' => 'TARGET="Win2" ONMOUSEOVER="window.status=\'Show information about this cell type\'; return true"',
+
+    	       'Organism Name' => "$CGI_BASE_DIR/$SBEAMS_SUBDIR/ManageTable.cgi?TABLE_NAME=organism&organism_id=\%$colnameidx{organism_id}V",
+    	       'Organism Name_ATAG' => 'TARGET="Win2" ONMOUSEOVER="window.status=\'Show information about this organism\'; return true"',
+
+    	       'Tissue Type' => "$CGI_BASE_DIR/$SBEAMS_SUBDIR/ManageTable.cgi?TABLE_NAME=IS_tissue_type&tissue_type_id=\%$colnameidx{tissue_type_id}V",
+    	       'Tissue Type_ATAG' => 'TARGET="Win2" ONMOUSEOVER="window.status=\'Show information about this tissue type\'; return true"',
+
+
+  );
+
+
+
+  #### Define columns that should be hidden in the output table
+  %hidden_cols = ('assay_id' => 1,
+		  'antibody_sort_order'	=> 1,
+		  'cell_type_sort_order' => 1,
+			'antibody_id'	=> 1,
+			'structural_unit_id'	=>	1,
+		  'organism_id' => 1,
+		  'tissue_type_id' => 1
+  );
+
+
+  #### If there are titles from the resultset, use those
+  if (@resultset_column_titles) {
+    @column_titles = @resultset_column_titles;
+  }
+
+
+  #########################################################################
+  #### If QUERY or VIEWRESULTSET was selected, display the data
+  if ($apply_action =~ /QUERY/i || $apply_action eq "VIEWRESULTSET") {
+
+    #### If the action contained QUERY, then fetch the results from
+    #### the database
+    if ($apply_action =~ /QUERY/i) {
+		
+	   #### Show the SQL that will be or was executed
+      $sbeams->display_sql(sql=>$sql) if ($show_sql);
+			#### this always happens
+      #### Fetch the results from the database server
+      $sbeams->fetchResultSet(
+        sql_query=>$sql,
+        resultset_ref=>$resultset_ref,
+      );
+			
+      #### Store the resultset and parameters to disk resultset cache
+      $rs_params{set_name} = "SETME";
+      $sbeams->writeResultSet(
+        resultset_file_ref=>\$rs_params{set_name},
+        resultset_ref=>$resultset_ref,
+        query_parameters_ref=>\%parameters,
+        resultset_params_ref=>\%rs_params,
+        query_name=>"$SBEAMS_SUBDIR/$PROGRAM_FILE_NAME",
+        column_titles_ref=>\@column_titles,
+      );
+
+    }
+		
+    #### Post process the resultset
+    my $cytoscape = { template => 'SummarizeStains' };
+    postProcessResultset(
+      rs_params_ref=>\%rs_params,
+      resultset_ref=>$resultset_ref,
+      query_parameters_ref=>\%parameters,
+      column_titles_ref=>\@column_titles,
+      cytoscape=>$cytoscape,
+    ) if (defined($parameters{display_options}) &&
+	  $parameters{display_options} =~ /pivot/i);
+
+  #### Finish the upper part of the page and go begin the full-width
+  #### data portion of the page
+  $sbeams->display_page_footer(close_tables=>'YES',
+  separator_bar=>'YES',display_footer=>'NO') if $apply_action eq 'QUERYHIDE';
+
+
+    #### Display the resultset
+    $sbeams->displayResultSet(
+      resultset_ref=>$resultset_ref,
+      query_parameters_ref=>\%parameters,
+      rs_params_ref=>\%rs_params,
+      url_cols_ref=>\%url_cols,
+      hidden_cols_ref=>\%hidden_cols,
+      max_widths=>\%max_widths,
+      column_titles_ref=>\@column_titles,
+      base_url=>$base_url,
+      cytoscape=>$cytoscape,
+    );
+
+   #### Display the resultset controls
+    $sbeams->displayResultSetControls(
+      resultset_ref=>$resultset_ref,
+      query_parameters_ref=>\%parameters,
+      rs_params_ref=>\%rs_params,
+      base_url=>$base_url,
+      cytoscape=>$cytoscape,
+    );
+
+
+    #### Displays the options for plotting data from the resultset
+    $sbeams->displayResultSetPlot(
+      rs_params_ref=>\%rs_params,
+      resultset_ref=>$resultset_ref,
+      query_parameters_ref=>\%parameters,
+      column_titles_ref=>\@column_titles,
+      base_url=>$base_url,
+    );
+
+
+  #### If QUERY was not selected, then tell the user to enter some parameters
+  } else {
+    if ($sbeams->invocation_mode() eq 'http') {
+      print "<H4>Select parameters above and press QUERY</H4>\n";
+    } else {
+      print "You need to supply some parameters to contrain the query\n";
+    }
+  }
+
+
+} # end handle_request
+
+
+
+###############################################################################
+# evalSQL
+#
+# Callback for translating Perl variables into their values,
+# especially the global table variables to table names
+###############################################################################
+sub evalSQL {
+  my $sql = shift;
+	
+  return eval "\"$sql\"";
+
+} # end evalSQL
+
+
+
+###############################################################################
+# postProcessResultset
+#
+# Perform some additional processing on the resultset that would otherwise
+# be very awkward to do in SQL.
+###############################################################################
+sub postProcessResultset {
+		
+  my %args = @_;
+    my ($i,$key,$line,$result,$sql,$cellTypeIndex,$antibodyIndex,
+      $intenseIndex,$equivocalIndex,$nonIndex, $organismID);
+
+  my (%dataHash,%cellTypeHash,%RefSeqIDs);
+
+
+  #### Process the arguments list
+  my $resultset_ref = $args{'resultset_ref'};
+  my $rs_params_ref = $args{'rs_params_ref'};
+  my $query_parameters_ref = $args{'query_parameters_ref'};
+  my $column_titles_ref = $args{'column_titles_ref'};
+  my $cytoscape = $args{'cytoscape'};
+  my $option;
+
+  
+  # Print javascript routine to check weighting factor input.  Had to add
+  # the output mode checking because we get in here in a variety of ways.
+  if  ( uc($sbeams->output_mode()) =~ /HTML/ && 
+        !defined $query_parameters_ref->{exprTabMode} ) {
+    print getWFJavascript();
+  }
+
+  # This will tell us if we are exporting table as TSV or other
+  my $exprTabMode = $query_parameters_ref->{exprTabMode} || 'HTML';
+  
+  #### Set up some data data structures to hold Cytoscape data
+  my @cytoscape_files = ( 'network.sif','commonName.noa','organism.noa',
+    'ExpressionLevel.eda','ExpressionLevelLabel.eda','NodeType.noa' );
+  my %cytoscape_header = ( 'network.sif' => undef,
+			   'commonName.noa' => 'commonName',
+			   'organism.noa' => 'species',
+			   'ExpressionLevel.eda' => 'ExpressionLevel',
+			   'ExpressionLevelLabel.eda' => 'ExpressionLevelLabel',
+			   'NodeType.noa' => 'NodeType',
+			 );
+  foreach my $file ( @cytoscape_files ) {
+    my @tmp = ( $cytoscape_header{$file} );
+    $cytoscape->{files}->{$file} = \@tmp;
+  }
+
+
+  my @row;
+  my $irow = 0;
+  my ($value,$element);
+  my $nrows = scalar(@{$resultset_ref->{data_ref}});
+
+  if ( !$nrows ) {
+    print "<center>
+           <table>
+             <tr>
+               <td align = center>
+                 <b> Sorry, no data available for this Query </b>
+               </td>
+             </tr>
+           </table>
+           </center>";
+     # Can't see why they'd want to see anything else;
+     # exit;
+  }
+
+  my(%antibodyHash, %cellIdHash);
+  my @antibodyArray;
+  my $prevAntibodyName = '';
+
+  #getting the index and populating a datahash with the returned result
+  my $biosequence_name_column_index = $resultset_ref->{column_hash_ref};
+
+  my $weight = ( defined $query_parameters_ref->{weighting_factor} ) ? 
+                         $query_parameters_ref->{weighting_factor} : WEIGHTING_FACTOR;
+
+  if ( $weight !~ /^\d*\.*\d*$/ || $weight < 0 || $weight > 1 ) {
+    die ( "Illegal weighting factor $weight" );
+  }
+
+  # Hash to hold all struct_units seen for bladder
+  my %bnum;
+  my %pnum;
+
+  # Hash to key cell types for making struct_units seqregate (temporary).
+  my %struct_unit = ( 'Bladder' => 1,
+                      'Prostate' => 2 );
+  
+  for (@{$resultset_ref->{data_ref}}) {
+    
+    @row = @{$resultset_ref->{data_ref}->[$irow++]};
+    next unless $row[$biosequence_name_column_index->{structural_unit_name}];
+
+    if ( $row[$biosequence_name_column_index->{tissue_type_name}] =~ /Bladder/ ) {
+      $bnum{$row[$biosequence_name_column_index->{structural_unit_name}]}++; 
+    } elsif ( $row[$biosequence_name_column_index->{tissue_type_name}] =~ /Prostate/ ) {
+      $pnum{$row[$biosequence_name_column_index->{structural_unit_name}]}++; 
+    }
+
+    $organismID =  $row[$biosequence_name_column_index->{organism_id}];
+    my $antibodyName =  $row[$biosequence_name_column_index->{antibody_name}];
+    my $antibodyId = $row[$biosequence_name_column_index->{antibody_id}];
+    my $refseq_accession = $row[$biosequence_name_column_index->{refseq_accession}];
+
+    # Cell types have an intrinsic tissue_type in addition to a structural unit
+    # This code appends a linker (---) plus the tissue type id, so that s_units
+    # with the same name but different ttypes can be segregated. 
+    my $cellTypeName = $row[$biosequence_name_column_index->{structural_unit_name}] .
+              '---' . $struct_unit{$row[$biosequence_name_column_index->{tissue_type_name}]};
+    my $cellTypeId = $row[$biosequence_name_column_index->{structural_unit_id}];
+
+    if ($cellTypeName) {
+
+      #### Calculate the expression coefficient with equivocal weight of 0.1
+      my $probability = ( ($row[$biosequence_name_column_index->{intense_percent}]||0) * 1.0 +
+			  ($row[$biosequence_name_column_index->{equivocal_percent}]||0) * $weight)/100;
+      $dataHash{$antibodyName}->{$cellTypeName}->{probability}+=$probability if $cellTypeName; 
+      $dataHash{$antibodyName}->{$cellTypeName}->{numberOfEx}++ if $cellTypeName;
+
+      # Get rid of hanging chads - pseudo columns for nameless structural units
+      (my $substantial_name = $cellTypeName ) =~ s/---\d$//;
+      $cellTypeHash{$cellTypeName} = $row[$biosequence_name_column_index->{structural_unit_sort_order}] if ($substantial_name);
+
+      if ($prevAntibodyName ne $antibodyName) {
+      	push(@antibodyArray, $antibodyName);
+      	$RefSeqIDs{$antibodyName} = $refseq_accession;
+	      $prevAntibodyName = $antibodyName;
+      }
+      $antibodyHash{$antibodyName} = $antibodyId;
+      $cellIdHash{$cellTypeName} = $cellTypeId;
+    }
+  } # End resultset loop
+
+  my %numcols = ( 'Urinary Bladder' => scalar(keys(%bnum)), 
+                  'Prostate'        => scalar(keys(%pnum)) );
+		
+  my @colorArray = ( '#FFC6A5','#FF6342','#FF0000','#AD0000' );
+  my @shadeArray = ( '#E0E0E0','#BFBFBF','#A1A1A1','#808080' );
+  
+  # Build table legend
+  my $legend = SBEAMS::Connection::DataTable->new( ALIGN => 'CENTER' );
+  my @intDesc = ( 'none 0.0 - 0.250', '0.251 - 0.500', '0.501 - 0.750', 'intense 0.751 - 1.0' );
+  $legend->addRow (  \@intDesc );
+  for( my $cnt = 0; $cnt < 4; $cnt++ ) {	
+    $legend->setCellAttr( ROW => 1, COL => $cnt + 1, WIDTH => 150,
+                          ALIGN => 'CENTER', BGCOLOR => $colorArray[$cnt] );
+  }
+
+  # generating expression summary table
+  my $table = SBEAMS::Connection::DataTable->new( BORDER => 1,
+                                                  ALIGN => 'CENTER' );
+
+  # Avoid perilous global hash and redundant sorting! (shudder)
+  my @skeys = sort { $cellTypeHash{$a} <=> $cellTypeHash{$b} || $a cmp $b } keys( %cellTypeHash );
+
+  # Represents a row in the HTML table
+  my @trow;
+
+  # Add column heading for antibody name.
+  push @trow, ( $exprTabMode eq 'HTML' ) ? "<B><BR>Antibody</B>" : 'Antibody';
+
+  # Show number of experiments?
+  my $pivot = ( $query_parameters_ref->{display_options} =~ /numberof/i ) ? 1 : 0;
+
+  my $cnt = 2;
+  for ( 'Urinary Bladder', 'Prostate' ) {
+    if ( $exprTabMode eq 'HTML' && $numcols{$_} > 0 ) {
+      $numcols{$_} = ($numcols{$_}) * 2  if $pivot;
+      push @trow, "<B>$_</B>";
+      $table->setCellAttr( ROW => 1, COL => $cnt++, COLSPAN => $numcols{$_}, BGCOLOR => '#DDDDDD' )
+    }
+  }
+  push @trow, "<B>$_</B>" if $exprTabMode eq 'HTML';
+  $table->addRow( \@trow );
+  $table->setCellAttr( ROW => 1, COL => 1, ROWSPAN => 2 );
+  $#trow = -1;  
+  
+
+
+  foreach my $skey ( @skeys ) {
+
+    # Remove the tissue_type tags
+    ( my $cellType = $skey ) =~ s/---\d//;
+
+    # Add the table headings;
+    push @trow, ( $exprTabMode eq 'HTML' ) ? makeGlossaryLink($cellType) : $cellType;
+    push @trow, ( $exprTabMode eq 'HTML' ) ? "<B># Exp</B>" : 
+                                            '# Exp' if $pivot;
+    
+    #### Store information needed for a Cytoscape display
+    push(@{$cytoscape->{files}->{'NodeType.noa'}},"$cellType = Structural Unit");
+    push(@{$cytoscape->{files}->{'organism.noa'}},"$cellType = Homo sapiens");
+
+  } # End column headings loop
+  $table->addRow( \@trow );
+
+  # Purge array
+  $#trow = -1;  
+
+  #here is the actual data
+  foreach my $antibodyKey (@antibodyArray) {
+
+    my $averageNumber;
+    my $abundance = '';
+    my $expNumber;
+
+    my $abody = ( $exprTabMode ne 'HTML' ) ? $antibodyKey :
+    "<A HREF='$CGI_BASE_DIR/$SBEAMS_SUBDIR/processAntibody.cgi?action=ab_details;antibody_id=$antibodyHash{$antibodyKey}'><B>$antibodyKey</B></A>";
+    push @trow, $abody;
+    
+    #### Store information needed for a Cytoscape display
+    my $canonical_name = $RefSeqIDs{$antibodyKey};
+    $canonical_name = $antibodyKey unless ($canonical_name);
+    push(@{$cytoscape->{files}->{'NodeType.noa'}},"$canonical_name = Antibody");
+    push(@{$cytoscape->{files}->{'organism.noa'}},"$canonical_name = Homo sapiens");
+    push(@{$cytoscape->{files}->{'commonName.noa'}},"$canonical_name = $antibodyKey");
+
+    # Have to keep track of current row/column.  With headings/abs, bump each 1 
+    my $colnum = 2;
+    my $rownum = $table->getRowNum();
+    foreach my $cellKey ( @skeys ) {
+
+#     Default values, may be overridden
+      my $val = ( $exprTabMode eq 'HTML' ) ? '&nbsp;' : '';
+      my $pval = ( $exprTabMode eq 'HTML' ) ? '&nbsp;' : '';
+      my $colorAverage = '#FFFFFF';
+      my $colorAbundance;
+
+      my $key = $antibodyKey; 
+      $abundance = $dataHash{$key}->{$cellKey}->{abundance} if  $cellKey eq 'Stromal Leukocytes';;
+
+      #### If there is no experimental data, show an empty cell
+      if ( $dataHash{$key}->{$cellKey}->{numberOfEx} ) {
+
+        $averageNumber =($dataHash{$key}->{$cellKey}->{probability})/($dataHash{$key}->{$cellKey}->{numberOfEx});
+        $averageNumber =~ s/(.*\.\d{3}).*$/$1/;
+        $expNumber = $dataHash{$key}->{$cellKey}->{numberOfEx};
+					
+        #various colors for various probability  and abundance levels
+        $colorAverage = '#FFC6A5' if($averageNumber <= 0.25);
+        $colorAverage = '#FF6342' if($averageNumber >0.25 and $averageNumber <= 0.500);
+        $colorAverage = '#FF0000' if($averageNumber >0.5 and $averageNumber <= 0.750);
+        $colorAverage = '#AD0000' if($averageNumber > 0.750);
+
+        $colorAbundance = '#E0E0E0' if ($abundance eq 'rare');
+        $colorAbundance = '#BFBFBF 'if ($abundance eq 'moderate');
+        $colorAbundance = '#A1A1A1 'if ($abundance eq 'high');
+        $colorAbundance = '#808080' if ($abundance eq 'most');
+        $val = ( $exprTabMode ne 'HTML' ) ? $averageNumber :
+        "<A HREF =\"$CGI_BASE_DIR/$SBEAMS_SUBDIR/SummarizeStains?action=QUERY&antibody_id=$antibodyHash{$antibodyKey}&cell_type_id=$cellIdHash{$cellKey}&organism_id=$organismID&display_options=MergeLevelsAndPivotCellTypes\">$averageNumber</A>";
+        $pval = $expNumber;
+      }
+
+    # Remove the tissue_type tags
+    ( my $cellType = $cellKey ) =~ s/---\d//;
+				
+      #### Store information needed for a Cytoscape display
+      if ($averageNumber && $averageNumber > 0) {
+      	my $decimal_number = sprintf("%.2f",$averageNumber);
+      	push(@{$cytoscape->{files}->{'network.sif'}},"$canonical_name\tisExpressedIn\t$cellType");
+      	push(@{$cytoscape->{files}->{'ExpressionLevel.eda'}},"$canonical_name (isExpressedIn) $cellType = $decimal_number");
+      	push(@{$cytoscape->{files}->{'ExpressionLevelLabel.eda'}},"$canonical_name (isExpressedIn) $cellType = $decimal_number ($expNumber)");
+      }
+
+      # First, add average expression regardless
+      push @trow, $val;
+      $table->setCellAttr( ROW => $rownum + 1, COL => $colnum++, 
+                           ALIGN => 'CENTER', BGCOLOR => $colorAverage,
+                           WIDTH => 50, HEIGH=> 20 );
+
+      # Next, add # expt data iff we're pivoting those
+      if ( $pivot ) {
+        push @trow, $pval;
+        $colnum++;
+      }
+
+    } # End table data loop
+    $table->addRow( \@trow );
+    $#trow = -1;
+  }
+  $table->setRowAttr( ROWS => [ 1 .. $table->getRowNum() ], ALIGN => 'CENTER' );
+  if ( $exprTabMode eq 'TSV' ) {
+    print "Content-type: text/tab-separated-values\n";
+    print "Content-dispostion: attachment filename=expressionSummary.tsv\n\n";
+    print $table->asTSV();
+    exit 1;
+  } elsif ( $exprTabMode eq 'CSV' ) {
+    print "Content-type: text/comma-separated-values\n";
+    print "Content-dispostion: attachment filename=expressionSummary.csv\n\n";
+    print $table->asCSV();
+    exit 1;
+  } elsif ($sbeams->output_mode() eq 'html' ) {
+
+  # Build hidden params to allow TSV export of expression summary  
+  my $tsvForm =<<"  END_QUERY";
+  <FORM NAME=exportExpressionSummary ACTION='SummarizeStains/expressionSummary.tsv' METHOD=POST>
+  <INPUT TYPE='HIDDEN' NAME='rs_set_name' VALUE='$rs_params_ref->{set_name}'</INPUT>
+  <INPUT TYPE='SUBMIT' NAME='exprTabMode' VALUE='TSV'></INPUT>
+  </FORM>
+  END_QUERY
+  my $csvForm =<<"  END_QUERY";
+  <FORM NAME=exportExpressionSummary ACTION='SummarizeStains/expressionSummary.csv' METHOD=POST>
+  <INPUT TYPE='HIDDEN' NAME='rs_set_name' VALUE='$rs_params_ref->{set_name}'</INPUT>
+  <INPUT TYPE='SUBMIT' NAME='exprTabMode' VALUE='CSV'></INPUT>
+  </FORM>
+  END_QUERY
+
+  my $pad = '&nbsp;' x 50;
+
+  # Print out HTML for expression summary, iff there are results.
+  print <<"  END" if $nrows;
+  $table<BR>
+  <TABLE BORDER=0>
+    <TR>
+      <TD ALIGN='RIGHT'>
+      <B>Export Summary Data as:</B>
+      </TD>
+      <TD>
+      $tsvForm
+      </TD>
+      <TD>
+      $csvForm
+      </TD>
+      <TD>
+      $pad
+      </TD>
+      <TD>
+      $pad
+      </TD>
+    </TR>
+    <TR>
+      <TD ALIGN='RIGHT'>
+      <B>Expression Level Color Scale:</B>
+      </TD>
+      <TD COLSPAN=4>
+      $legend
+      </TD>
+    </TR>
+  </TABLE>
+  <BR><BR>
+  END
+  } 
+  return 1;
+} # end postProcessResult
+
+sub makeGlossaryLink {
+  my $celltype = shift;
+  my %linkage = ( 'Luminal Epithelial Cells' => 'LepithCells',
+                  'Basal Epithelial Cells' => 'BepithCells',
+                  'Stromal Fibromuscular Cells' =>'FibormCells',
+                  'Stromal Endothelial Cells' =>'EndoCells',
+                  'Stromal Perineural Cells' =>'NeuroCells',
+                  'Stromal Nerve Sheath Cells' =>'NerveCells',
+                  'Stromal Leukocytes' =>'Leuko',
+                  'Cancerous Cells' =>'',
+                  'Normal Cells' =>'',
+                  'Atrophic glands' => 'Aglands',
+                  'Normal glands' => '',
+                  'Hyperplastic glands' =>'Hglands',
+                  'Gleason Pattern 3' =>'Gleason3',
+                  'Gleason Pattern 4' =>'Gleason4',
+                  'Gleason Pattern 5' =>'Gleason5',
+                  'Cap Cells' =>'CapCells',
+                  'Intermediate Cells' => 'Intermediate_cells',
+                  'Lamina propria - superficial' => 'Lamina_propria_superficial',
+                  'Lamina propria - deep' =>'Lamina_propria_deep',
+                  'Submucosa' =>'Submucosa',
+                  'Muscularis propria' =>'Muscularis_propria',
+                  'Transitional Cell Carcinoma' =>'Transitional_cell_carcinoma',
+                  'Superficial Epithelial Cells' =>'' );
+  unless ( $linkage{$celltype} ) {
+    return "<B>$celltype</B>";
+  }
+  return <<"  END";
+  <A HREF=http://scgap.systemsbiology.net/ontology/Glossary.php#$linkage{$celltype}><B>$celltype</B></A>
+  END
+                  
+}
+
+
+###############################################################################
+# bySortOrder
+#
+# Sorting function for a hash with sort_order values
+###############################################################################
+sub bySortOrder {
+
+  #### First sort by the value
+  if ($hash_to_sort{$a} <=> $hash_to_sort{$b}) {
+    return $hash_to_sort{$a} <=> $hash_to_sort{$b};
+
+  #### And if those are equal, sort by key
+  } else {
+    return $a cmp $b;
+  }
+
+}
+
+
+sub getWFJavascript {
+  return( <<"  END" );
+  <SCRIPT language="javascript">
+
+  // Script to validate numeric input in weighting factor.
+  function checkform() {
+    wfact = document.MainForm.weighting_factor.value;
+    if ( wfact > 1 ) {
+      alert( "Weighting factor must be less than or equal to 1" );
+      return false;
+    }
+    if ( wfact < 0 ) {
+      alert( "Weighting factor must be greater than or equal to 0" );
+      return false;
+    }
+
+    dec_yet = 0; 
+    for ( i = 0; i < wfact.length; i++ ) {
+      if ( wfact.charAt(i) == '.' ) {
+        dec_yet++;
+      } else {
+        if ( ! /[0123456789]/.test( wfact.charAt(i) ) ) {
+          alert ( "Illegal non-numeric character '" + wfact.charAt(i) + "'" );
+          return false;
+        }
+      }
+    }
+  if ( dec_yet > 1 ) {
+    alert ( "Cannot have more than one decimal" );
+    return false
+  }
+  // We made it!
+  return true;
+  }
+  </SCRIPT>
+  END
+}
+
+###############################################################################
+# convertGenomeCoordinates
+#
+# Convert one or more genome coordinate strings of the form
+# hg16:chr15:123456-12347+ to the corresponding antibodies
+###############################################################################
+sub convertGenomeCoordinates {
+  my %args = @_;
+
+  #### Process the arguments list
+  my $genome_coordinates = $args{'genome_coordinates'};
+  return unless($genome_coordinates);
+
+  #### Split the coordinates on semicolon
+  my @genome_coordinates = split(/;/,$genome_coordinates);
+
+  #### Define an aray to bold antibodies
+  my @antibody_ids;
+
+  #### Loop over each one and try the conversion
+  foreach my $coordinate_str (@genome_coordinates) {
+    if ($coordinate_str =~ /(.+)?:chr(.+)?:(\d+)-(\d+)([\-\+\?])/) {
+      my $genome_build_id = $1;
+      my $chromosome = $2;
+      my $start_pos = $3;
+      my $end_pos = $4;
+      my $strand = $5;
+
+      # Map genome_build_id to organism_id
+      my $organism_id = ( $genome_build_id =~ /mm/ ) ? 6 :
+                        ( $genome_build_id =~ /hg/ ) ? 2 : 0;
+      
+      unless ($organism_id) {
+	      print "ERROR: Invalid genome_build_id '$genome_build_id'<BR>\n";
+	      next;
+      }
+
+      # SQL to perform lookups in CBIL genome coordinates table.
+      my $bgcSQL =<<"      END";
+	    SELECT AB.antibody_id
+	    FROM $TBBL_CBIL_GENOME_COORDINATES GC
+	    JOIN $TBBL_DOTS_TO_LOCUSLINK DTL
+        ON dtl.dots_id = GC.dots
+	    JOIN $TBIS_BIOSEQUENCE BS
+	      ON (DTL.locus_link_id = BS.biosequence_accession )
+	    JOIN $TBIS_ANTIGEN AN ON ( BS.biosequence_id = AN.biosequence_id )
+	    JOIN $TBIS_ANTIBODY AB ON ( AN.antigen_id = AB.antigen_id )
+	    WHERE organism_id = $organism_id
+	    AND chromosome = '$chromosome'
+	    AND ( gene_start BETWEEN $start_pos AND $end_pos
+	         OR gene_end BETWEEN $start_pos AND $end_pos
+	         OR $start_pos BETWEEN gene_start
+	                               AND gene_end
+               )
+      END
+
+      my $igcSQL = qq~
+	SELECT AB.antibody_id
+	  FROM $TBIS_GENOME_COORDINATES GC
+	  JOIN $TBIS_BIOSEQUENCE BS
+	    ON (GC.locus_link_id = BS.biosequence_accession )
+	  JOIN $TBIS_ANTIGEN AN ON ( BS.biosequence_id = AN.biosequence_id )
+	  JOIN $TBIS_ANTIBODY AB ON ( AN.antigen_id = AB.antigen_id )
+	 WHERE organism_id = $organism_id
+	   AND genome_chromosome = '$chromosome'
+	   AND ( genome_transcription_start BETWEEN $start_pos AND $end_pos
+	         OR genome_transcription_end BETWEEN $start_pos AND $end_pos
+	         OR $start_pos BETWEEN genome_transcription_start
+	                               AND genome_transcription_end
+               )
+      ~;
+     
+      my $sql = ( $genome_build_id eq 'hg17' ) ? $bgcSQL : $igcSQL;
+
+      my @rows = $sbeams->selectOneColumn($sql);
+      if (scalar(@rows) > 1) {
+        $log->warn( "Found multiple rows on lookup for $coordinate_str\n" );
+      }
+    	@antibody_ids = @rows if scalar(@rows);
+
+    } else {
+      print "ERROR: Unable to parse coordinate string '$coordinate_str'<BR>\n";
+      return(-1);
+    }
+  }
+
+  return(0) unless (@antibody_ids);
+  return(join(',',@antibody_ids));
+}
+
+
