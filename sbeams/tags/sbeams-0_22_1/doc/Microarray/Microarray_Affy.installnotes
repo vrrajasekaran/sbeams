@@ -1,0 +1,774 @@
+
+Notes installing the SBEAMS - Microarray_Affy module
+
+Background)
+
+ISB developed the microarray module to initially deal with organizing and analyzing 
+2-color data from arrays printed in-house.  Starting around July 2004, development started to
+extended the Microarray module to organize and analyze the Affymetrix Expression array data.
+The install instructions are for setting up just the Affy portion of the module.  You may notice that 
+some tables and links are not utilized by the Affy portion of the Microarray module but are still visible 
+since both the 2-color and Affy array infrastructure were built out within the same sbeams module.
+
+
+-------------------------------------------------------------------------------
+1) Software and module Dependencies
+
+You must first install the SBEAMS Core.  See the separate installation
+notes (sbeams.installnotes) on how to accomplish that. You must also
+install the BioLink module; follow the installation instructions
+provided with that module first (BioLink.installnotes).
+
+
+The following Perl Modules often not found on a standard UNIX/Linux
+setup are required to successfully use SBEAMS - Microarray_Affy (in addition
+to the dependencies for the SBEAMS Core).
+
+XML::LibXML;
+Tie::IxHash;
+XML::Writer
+Archive::Zip
+Statistics::R [Optional] Not used in production code.  Only used in a test script Make_R_graph.cgi to demonstrate making a 
+	 	graph in using R and Perl
+---------------
+The following non-Perl software is required:
+
+Netpbm (http://netpbm.sourceforge.net)
+
+R -Version 2.0 or greater
+R -Bioconductor libraries, see below. 
+
+ library(affy)
+ library(gcrma)
+ library(vsn)
+
+ library(Biobase)
+ library(multtest)
+ library(annaffy)
+ library(webbioc)
+
+ library(siggenes)
+ 
+You can install all these libraries at once from within your R (after you've installed it) by running these 2 commands:
+source("http://www.bioconductor.org/getBioC.R")
+getBioC()
+
+
+ #XSLT transformation engine {semi-optional} Only need to view the help pages
+ Ehttp://xmlsoft.org/XSLT/
+ xsltproc
+
+
+-------------------------------------------------------------------------------
+2) Installation Location
+
+SBEAMS is designed to live entirely in the "htdocs" area of your Apache
+web server.  For the remainder of this installation, it will be assumed
+that your installation is configured as follows; compensate for your
+specific setup:
+  servername: db
+  DocumentRoot: /local/www/html
+  Primary location: directly located in DocumentRoot,
+                   /local/www/html/sbeams  --> http://db/sbeams/
+  Development location: In a dev1 tree starting in the DocumentRoot,
+                   /local/www/html/dev1/sbeams  -> http://db/dev1/sbeams/
+
+All modules live in the same area and should be unpacked into the
+main SBEAMS area.
+
+# Set $SBEAMS enviroment variable (tcsh syntax):
+setenv SBEAMS /local/www/html/dev1/sbeams
+
+# bash syntax:
+# export SBEAMS=/local/www/html/dev1/sbeams
+
+-------------------------------------------------------------------------------
+3) Create and populate the database
+
+It is assumed that you have already created and tested your SBEAMS Core
+database.  You may either create a separate database for the Microarray_Affy
+database or you can put everything in the same database.
+
+Note that some database engines (rare now) may not permit
+cross-database queries in which case your may NOT use separate
+databases.  If you do use separate databases, you may not be able to
+enforce referential integrity between tables in the different
+databases.  This may or may not be a significant concern.
+
+- If you decide on a separate database, create it and within it,
+  create users "sbeams" and "sbeamsro" as a read/write
+  account and a read-only account, respectively, as done for the Core.
+
+- Generate the appropriate schema for your type(s) of database as follows:
+
+
+cd $SBEAMS/lib/scripts/Core
+set dbtype=mssql      #### Set to your RDBMS type: mssql, mysql, etc.
+./generate_schema.pl \
+  --table_prop ../../conf/Microarray/Microarray_table_property.txt \
+  --table_col ../../conf/Microarray/Microarray_table_column.txt \
+  --schema_file ../../sql/Microarray/Microarray --module Microarray \
+  --destination_type $dbtype --suppress
+
+
+- Verify that the SQL CREATE and DROP statements have been correctly
+  generated in $SBEAMS/lib/sql/Microarray/
+
+- Execute the statements to create and populate the database with some
+  bare bones data and indexes (for faster loading and querying).  This
+  uses the generic SQL execution script runsql.pl.  Note that several of
+  the commands below use the -i flag, this allows installation to continue
+  in case there are errors.  Currently there are such errors, so you may well
+  see some error output from the script.
+
+SQL Server Example:
+
+To CREATE and POPULATE:
+./runsql.pl -u sbeamsadmin -i -s $SBEAMS/lib/sql/Microarray/Microarray_CREATETABLES.mssql
+./runsql.pl -u sbeamsadmin -s $SBEAMS/lib/sql/Microarray/Microarray_POPULATE.sql
+./runsql.pl -u sbeamsadmin -i -s $SBEAMS/lib/sql/Microarray/Microarray_CREATECONSTRAINTS.mssql
+
+To CREATE indexes:
+./runsql.pl -u sbeamsadmin -i -s $SBEAMS/lib/sql/Microarray/Microarray_CREATEINDEXES.sql
+
+To CREATE Manual Constraints (Constraints that could not be auto-generated)
+./runsql.pl -u sbeamsadmin -i -s $SBEAMS/lib/sql/Microarray/Microarray_ADD_MANUAL_CONSTRAINTS.mssql
+
+##### MySQL ###############
+#
+# Copy:
+#   Microarray_ADD_MANUAL_CONSTRAINTS.mssql to Microarray_ADD_MANUAL_CONSTRAINTS.mysql
+#
+# Edit Microarray_ADD_MANUAL_CONSTRAINTS.mysql to remove dbo. from beginning
+# of table name on each line, and add a semicolon at the end of each line
+#
+# Edit Microarray_CREATEINDEXES.sql to remove dbo. from the beginning of each
+# table name and remove all comment lines (which begin with '--')
+#
+# Execute:
+#   ./runsql.pl -u sbeamsadmin -i -s $SBEAMS/lib/sql/Microarray/Microarray_CREATETABLES.mysql --delimiter semicolon
+#   ./runsql.pl -u sbeamsadmin -s $SBEAMS/lib/sql/Microarray/Microarray_POPULATE.sql --delimiter semicolon
+#   ./runsql.pl -u sbeamsadmin -i -s $SBEAMS/lib/sql/Microarray/Microarray_CREATECONSTRAINTS.mysql --delimiter semicolon
+#   ./runsql.pl -u sbeamsadmin -i -s $SBEAMS/lib/sql/Microarray/Microarray_CREATEINDEXES.sql --delimiter semicolon
+#   ./runsql.pl -u sbeamsadmin -i -s $SBEAMS/lib/sql/Microarray/Microarray_ADD_MANUAL_CONSTRAINTS.mysql --delimiter semicolon
+#
+###########################
+
+
+Note that the Microarray_POPULATE.mssql is not auto-generated and should
+probably work for all flavors of database
+
+Examples for table creation for other database flavors can be found in the
+Core installation notes and will not be repeated here.
+
+Notes:
+A few warnings or errors might be seen while creating the tables and constraints.  The ones
+below should be considered normal
+DBD::Sybase::db do failed: Server message number=2714 severity=16 state=6 line=3 server=TITAN text=There is already an object named 'biosequence_set' in the database. at /var/www/html/sbeams/lib/scripts/Core/runsql.pl line 113, <FIL> line 866.
+
+-------------------------------------------------------------------------------
+3-1) Data storage locations and naming conventions
+
+ISB Affymetrix Core facility name it's files with the following convention
+
+All Files generated by the core facility CEL, CHP, XML, RPT files all use the common root name
+YYYYMMDD_DD_<SAMPLE_NAME>.<ext>
+YYYYMMDD = Date array was scanned
+DD       = Unique Scan Number per Day ie 01, 02, 03....
+Sample_name = User Sample Name, No Spaces or strange characters
+
+Data Location.
+All the data is located within one main directory which is subdivided into folders named
+YYYYMM - <Year><Month>
+
+For external datasets we have a folder "external" within the main data repository and individual 
+experiments are separated into a user defined folder
+
+A cron job can be setup (see below) to keep monitoring the default directory for any new files to be uploaded
+
+
+#########################
+For initial setup make the following folders
+
+# These should already exist from the installation of the Core module
+mkdir $SBEAMS/tmp $SBEAMS/var 
+
+# These will have to be created.
+mkdir $SBEAMS/tmp/Microarray \
+$SBEAMS/tmp/Microarray/AFFY_ANNO_LOGS \
+$SBEAMS/tmp/Microarray/R_CHP_RUNS \
+$SBEAMS/tmp/Microarray/GetExpression \
+$SBEAMS/tmp/Microarray/GetExpression/jws \
+$SBEAMS/var/Microarray \
+$SBEAMS/var/Microarray/Affy_data \
+$SBEAMS/var/Microarray/Affy_data/probe_data \
+$SBEAMS/var/Microarray/Affy_data/probe_data/external \
+$SBEAMS/var/Microarray/Affy_data/delivery \
+$SBEAMS/var/Microarray/Affy_data/annotation \
+$SBEAMS/tmp/Microarray/Make_MEV_jws_files \
+$SBEAMS/tmp/Microarray/Make_MEV_jws_files/jws
+
+chgrp -R sbeams $SBEAMS/tmp/Microarray; chgrp -R sbeams $SBEAMS/var/Microarray;
+chmod -R g+ws $SBEAMS/tmp/Microarray; chmod -R g+ws $SBEAMS/var/Microarray;
+
+-------------------------------------------------------------------------------
+4) Edit the SBEAMS Configuration files
+
+cd $SBEAMS/lib/conf
+edit SBEAMS.conf
+
+Specifically:
+
+# In the DBPREFIX section, change to the correct db name, see main 
+# sbeams.installnotes for more information
+
+DBPREFIX{Microarray}    = microarray.dbo.
+
+# Next, the general microarray settings are grouped under 'Microarray Settings'
+# The section below tells a bit about each setting.  Creating the directories
+# specified above and leaving the default settings should result in a working 
+# system.
+
+# URL to help docs index page, if applicable
+CONFIG_SETTING{MA_AFFY_HELPDOCS_URL} 
+
+# Is set to true value, 2-color menus and options will not be shown
+CONFIG_SETTING{MA_HIDE_TWO_COLOR} = 0
+
+# Specify paths to R executable and library
+CONFIG_SETTING{MA_R_EXE_PATH} = /usr/local/bin/R
+CONFIG_SETTING{MA_R_LIB_PATH} = /usr/local/lib/R/library
+
+# The next 6 settings below can be specified as absolute or relative paths, see 
+# RELATIVE VS. ABSOLUTE PATHS below for details.  Default settings are relative
+
+# Directory to which affy log files will be written, if not set will default
+# to LOG_BASE_DIR above, else $sbeams/var/log.
+CONFIG_SETTING{MA_LOG_BASE_DIR}         = var/logs
+
+# Full path to a folder that will house all Affy CEL files and support files
+CONFIG_SETTING{MA_AFFY_PROBE_DIR}       = var/Microarray/Affy_data/probe_data
+
+# Location that all analysis results will be written to(see below)
+CONFIG_SETTING{MA_BIOC_DELIVERY_PATH}   = var/Microarray/Affy_data/delivery
+
+# Location that errors from loading affy annotation files will be kept 
+CONFIG_SETTING{MA_ANNOTATION_OUT_PATH}  = tmp/Microarray/Affy_data/annotation
+
+# path to tmp dir
+CONFIG_SETTING{MA_AFFY_TMP_DIR}         = tmp/Microarray
+
+# Location where zip files will be created for user downloads
+CONFIG_SETTING{MA_AFFY_ZIP_REQUEST_DIR} = tmp/Microarray/zip_request_dir
+
+
+# files that will be used to determine if an entire group of files, all sharing
+# the same basename, are present when uploading Affy arrays 
+CONFIG_SETTING{MA_AFFY_DEFAULT_FILES}   = CHP CEL XML INFO RPT R_CHP JPEG EGRAM_PF.jpg EGRAM_T.jpg EGRAM_F.jpg
+
+# Current protocol that describes the R script to produce the CHP like file
+$CONFIG_SETTING{MA_AFFY_R_CHP_PROTOCOL} = R Mas5.0 CHP
+
+	 			        
+# Notes: The web server user will need read access to the CEL file folders and
+# read/write access to the $CONFIG_SETTING{MA_BIOC_DELIVERY_PATH} folder
+
+
+-------------------------------------------------------------------------------
+5) Populate the driver tables and register the module
+
+cd $SBEAMS/lib/scripts/Core
+set CONFDIR = "../../conf"
+./update_driver_tables.pl $CONFDIR/Microarray/Microarray_table_property.txt
+./update_driver_tables.pl $CONFDIR/Microarray/Microarray_table_column.txt
+./update_driver_tables.pl $CONFDIR/Microarray/Microarray_table_column_manual.txt
+
+If this doesn't work.  Do not proceed, debug first.
+
+-Register the module:
+$SBEAMS/lib/scripts/Core/addModule.pl Microarray
+
+-------------------------------------------------------------------------------
+6) Add required Microarray work_groups and TGS entries. 
+
+$SBEAMS/lib/scripts/Core/DataImport.pl -s $SBEAMS/lib/refdata/Microarray/Microarray_work_groups.xml
+
+You should now see a link for Microarray in the webUI (may require that you 
+log back in).  In order to use some of the administrative features you will 
+have to add yourself to one or more of the work_groups that you created in 
+the command above, Microarray_admin and Microarray_user.
+
+With your browser, navigate to:
+[SBEAMS Home] [Admin] [Manage User Group Associations], [Add ...], and add
+yourself (and appropriate others) to these groups.
+
+Now that the Microarray driver tables are loaded, and the groups have been
+established, you should be able to go to the web site again and click on
+SBEAMS - Microarray and explore the tables.  They're all going to be empty,
+but you shouldn't get any errors, just empty resultsets.
+
+If this doesn't work.  Do not proceed, debug first.
+
+-------------------------------------------------------------------------------
+7) Add some sample data
+
+########################
+Test Data Background
+- Set 1) Set of 12 HG-U133A arrays to demonstrate loading externally-generated data: External_test_data.tar.gz
+- Set 2) 4 arrays on (HG-133 Plus 2) to be loaded as internally-generated data. Experiments with C4-2 and LNCaP human prostate cancer cell lines.  File: Affy_test_data.tar.gz
+########################
+- Download the data sets from
+http://www.sbeams.org/sample_data/
+Click on the link "External_test_data.tar.gz"
+Click on the link "Affy_test_data.tar.gz"
+Save the data to any folder or use the folder $SBEAMS/lib/refdata/Microarray
+
+Alternatively, cd to the target directory and fetch the files with wget:
+wget http://www.sbeams.org/sample_data/Microarray/External_test_data.tar.gz
+wget http://www.sbeams.org/sample_data/Microarray/Affy_test_data.tar.gz
+
+You can check the integrity of the downloads with the md5sum command:
+>md5sum External_test_data.tar.gz
+b77678175f9bbe6aba67398a1c34fcb1  External_test_data.tar.gz
+
+>md5sum Affy_test_data.tar.gz
+04d81273f454701e74526b450e79b740  Affy_test_data.tar.gz
+
+Check the download website for the most up-to-date checksum values.
+
+- Unpack the data and annotation file and copy them to the data folders
+cd $SBEAMS/lib/refdata/Microarray
+tar xvfz External_test_data.tar.gz
+tar xvfz Affy_test_data.tar.gz
+
+## Note that the directories below are based on the default directory structure,
+## you may need to modify the paths if you've changed anything.
+
+-Copy the annotation file to annotation directory
+cp External_test_data/HG-U133A_annot.csv $SBEAMS/var/Microarray/Affy_data/annotation/
+cp Affy_test_data/HG-U133_Plus_2_annot.csv $SBEAMS/var/Microarray/Affy_data/annotation/
+ 
+- Make the folders to hold the CEL files
+mkdir $SBEAMS/var/Microarray/Affy_data/probe_data/external/External_test
+mkdir $SBEAMS/var/Microarray/Affy_data/probe_data/200404
+
+- Copy the the CEL files and info file to the test folder
+cp External_test_data/* $SBEAMS/var/Microarray/Affy_data/probe_data/external/External_test/
+
+-Copy All the files CEL, XML, RPT files from the Affy_test_data to the data folder
+cp Affy_test_data/* $SBEAMS/var/Microarray/Affy_data/probe_data/200404/
+
+########################
+(logged in as your user account)
+
+Add a contact as follows:
+- Switch to the Admin group by using the drop-down box at top
+- Click on [SBEAMS Home]
+- Click on [Admin]
+- Click [Manage Contacts] and [Add Contact]
+- Make a new contact with the following information:
+   Last Name:		Stegmaier
+   First Name:		Kimberly
+   Contact Type:	data_producer
+   Organization:	UNKNOWN
+- Fill in the appropriate information and click [INSERT]
+
+Add a user login as follows:
+- Switch to the Admin group by using the drop-down box at top
+- Click on [SBEAMS Home]
+- Click on [Admin]
+- Click on [Add User Login]
+- Make a new user login with the following information:
+   Contact:	Stegmaier, Kimberly
+   Username:	kstegmaier
+   Privelege:	data_reader
+- Fill in the appropriate information and click [INSERT]
+
+Add a Project:
+- Switch to the Microarray_user group by using the drop-down box at top
+- Click on [SBEAMS Home]
+- Under "My Projects" tab, click [Add A New Project].
+  Required fields are in red.  If you don't have a budget number, enter NA.
+- Make a project using the following information
+   Project Name: "Primary APL Samples"
+   Project Tag:  "PrimaryAPL"
+   PI Contact:	 "Stegmaier, Kimberly"
+   Description:  "Human cell type arrays from Stegmaier 2004 paper."
+   Budget:	 "NA"
+- Fill in the appropriate information and click [INSERT]
+
+Add a second Project:
+- Click the 'Go Back' button 
+- Make a project using the following information
+   Project Name: "ISB Test Data"
+   Project Tag:  "ISB_test"
+   Description:  "4 Human CEL files HG-U133_Plus_2.  2 files from Human LNCaP prostate cancer cell, 2files from C4-2 cancer cell lines"
+- Fill in the appropriate information and click [INSERT]
+
+########################
+Add An Array Type
+- Switch to the Microarray_admin group by using the drop-down box at top
+- Switch to the the Microarray Module, Click On [Microarray]
+- At the bottom of the page, on the Navigation bar click on [Slide Types] button
+- Click On [Add Slide Type]
+- Fill in the Data
+   Name: "HG-U133A"
+   Organism: "Human"
+   Comment: "Affymetrix Human Genome U133A Array"
+- Click Insert
+
+- Make a second array 
+- Click the 'Go Back' Button
+  Name: "HG-U133_Plus_2"
+  Organism: "Human"
+  Comment: "Affymetrix Human Genome U133 Plus 2.0 Array"
+- Click Insert
+
+########################  
+Add Analysis Protocol
+- Switch to the Microarray_admin group by using the drop-down box at top
+- Switch to the the Microarray Module, Click On [Microarray]
+- On the Navigation bar click on [Protocols] button
+- Click [Add Protocol]
+
+- Add a new Protocol Type, Click the "Plus Icon" next to Protocol Type
+- Fill in Protocol Type Name --> "image_analysis"
+- Click Insert.
+- Click "Go Back" Button
+- Insert the additional Protocol types 
+ "hybridization"
+ "array_scanning"
+
+
+- Go Back to the Add Protocol Page, and refresh the page.
+- Insert the data 
+   Protocol Type --> "image_analysis",
+   Name          --> "R Mas5.0 CHP",
+   Protocol     --> "Use R-bioconductor to turn a CEL file into a CHP file" 
+- Click Insert
+ ########################  
+Add Hyb Protocol
+- Click "Go Back" Button
+
+- Insert the data 
+   Protocol Type --> "hybridization",
+   Name          --> "AFFY EukGE-WS2v5_450",
+   Protocol     --> "Paste in the text output from the affy wash station" 
+- Click Insert
+########################
+Add Scanning Protocol
+- Click the "Go Back" Button
+
+- Insert the data 
+   Protocol Type --> "array_scanning",
+   Name          --> "AFFY Scanning",
+   Protocol     --> "Paste in the text output from the affy scanner" 
+ - Click Insert  
+########################
+Add Feature extraction Protocol
+- Click the "Go Back" Button
+
+- Insert the data
+   Protocol Type --> "image_analysis",
+   Name          --> "AFFY Feature Extraction",
+   Protocol     --> "Generation of CEL file from DAT file is automatic in GCOS 1.0+ Software" 
+- Click Insert
+########################
+Add CHP Generation Protocol
+- Click the "Go Back" Button
+
+- Insert the data
+   Protocol Type --> "image_analysis",
+   Name          --> "AFFY GCOS CHP Generation",
+   Protocol     --> "Create CHP file in GCOS by right-clicking a CEL file and choosing 'Analyze'"
+- Click Insert
+########################
+Add Server Info
+- Some of the scripts and database tables keep track of file paths and the server name needs to be
+entered before some of the scripts will work
+- Manually construct the URL to enter the data below
+- The url should be almost the same for the ones above for adding an array, but the TABLE_NAME will = MA_server
+http://<server_name>/sbeams/cgi/Microarray/ManageTable.cgi?TABLE_NAME=MA_server
+- Enter the server name
+- Click [Insert]
+
+
+########################
+Add the Annotation for this array type
+
+- Annotations are downloaded from Affymetrix on quarterly basis, and must be done manually.  The file provided in the 
+test data set was downloaded from Affymetrix.
+- Use the script to upload the annotation into SBEAMS.  These are large files,
+- and the process could take 20 minutes or more per file.  Note that the
+- Plus 2 array has about twice as many probsets as the 133A. 
+
+
+cd $SBEAMS/lib/scripts/Microarray
+./load_affy_annotation_files.pl --run_mode update \
+--file_name $SBEAMS/var/Microarray/Affy_data/annotation/HG-U133A_annot.csv
+
+- Add the annotation for the second array
+./load_affy_annotation_files.pl --run_mode update \
+--file_name $SBEAMS/var/Microarray/Affy_data/annotation/HG-U133_Plus_2_annot.csv
+
+
+########################
+Add the external arrays to the database
+
+- See sections about naming conventions (3-2)
+- The Data in the "External_test_data.tar.gz" folder contains CEL files that were not generated at ISB, so they did not
+have all the support data needed to automatically load the arrays from the core facility.
+
+- Adding external arrays is a two step process.
+- All the sample annotation is first collected in a "master_info" file which is just a tab
+  delimited file.
+- This file is then parsed to produce a info_file for each CEL file to be uploaded
+- See Below on how to upload data from a MAGE-XML file produced by the Affymetrix GCOS software
+
+
+- View the template on how to make a master_info file.  [Not needed for this example, the info file already exists]
+$SBEAMS/usr/Microarray/Example_master_upload_template.xls
+
+- Run the script to parse the master_info file
+cd $SBEAMS/lib/scripts/Microarray
+./Pre_process_affy_info_file.pl --run_mode make_new \
+--info_file $SBEAMS/var/Microarray/Affy_data/probe_data/external/External_test/External_test_data_master.txt
+
+- Run the script to upload the data into SBEAMS
+- This script will scan the default data directory (set in the Settings file) looking for new data
+ cd $SBEAMS/lib/scripts/Microarray;
+ ./load_affy_array_files.pl --run_mode add_new
+
+########################
+Add more data to the database  MAGE-XML data.
+
+- The data contained within the file "Affy_test_data.tar.gz" contains from 4 arrays scanned at ISB.
+- In addition to the CEL file is a CHP, RPT and XML files that were produced by the Affymetrix software GCOS.
+- ISB exports the MAGE-XML from the GCOS software with one extra attribute that will be needed for the current script to parse the data.
+- Setup GCOS software ## Only do this if you have an affy core facility and you want to load the data they produced
+	Goto the GCOS Manager, Click on the template tab.  
+	Create a new template
+	Add New Attribute "Array User Name" Type "String" Required "Yes"
+	Make sure to use the template when exporting data from the GCOS software after scanning slides
+
+
+########################
+Add expression data to the database
+Convert CEL file to CHP data using R-bioconductor
+
+cd $SBEAMS/lib/scripts/Microarray;
+./load_affy_R_CHP_files.pl --run_mode add_new
+##Note this will take a while of time to process, and running this on a fast machine would be a good idea
+
+- Test to see if the data has been entered properly
+- Open the url
+http://<sbeams_server>/sbeams/cgi/Microarray/GetAffy_GeneIntensity.cgi
+- Enter "IL%" in the box Gene Name, Click 'Simple Query'
+
+-------------------------------------------------------------------------------
+########################
+8) Setup the help pages
+########################
+
+Setting up the Affy user Help pages
+- There is a set of user help pages that were made for the end users and it shows how to use the different pages
+- The pages need an XSL processing engine to work.  Currently they are setup to use xsltproc by default.
+
+Check to to see if xsltproc is installed
+ xsltproc -V
+ If it's not installed goto  http://xmlsoft.org/XSLT/ and install the programs
+ 
+- Set the site specific information to locate the files.  Go and edit the following two files.
+cd $SBEAMS/doc/Microarray/affy_help_pages/includes
+
+- Edit the file 
+vi transformation_info.inc.php
+- Change the following variables to point to where the files are installed
+Example, Change $SBEAMS to suit your needs
+$XSLT_URL = "http://<$SBEAMS>/doc/Microarray/Affy_help/Affy_help.xslt";
+$XML_URL  = "http://<$SBEAMS>/doc/Microarray/Affy_help";
+
+$URL_BASE  = "http://<$SBEAMS>/doc/Microarray/affy_help_pages"
+$BASE_PATH = "<$SBEAMS>/doc/Microarray/affy_help_pages/Affy_help"
+
+$HOME_PAGE_URL = "<Local intra-net page>"
+
+
+- Edit the xslt file to add the correct server name
+cd $SBEAMS/doc/Microarray/affy_help_pages/Affy_help
+vi Affy_help.xslt
+
+- Change the lines, to indicate your servers that are running both SBEAMS and the affy help pages
+<xsl:variable name="Affy_home_server">db.systemsbiology.net</xsl:variable>
+<xsl:variable name="Sbeams_server">db.systemsbiology.net</xsl:variable>
+
+
+To See if the links work check out the page: 
+http://<sbeams_server>/doc/Microarray/affy_help_pages/
+Most of the links are relative but a few links go directly into SBEAMS 
+therefore the need to set the above links.  Also note some of the links 
+will not work since they are specific to ISB
+
+-------------------------------------------------------------------------------
+##############################
+9) Setup the analysis pipeline
+##############################
+
+The analysis pipeline allows users to analyze affy arrays and find differentially 
+expressed genes.  The analysis is done in R and the processing can be done on the 
+local server or passed off to a batch processor like pbs.  A series of web pages
+will walk the users through the analysis pipeline so there is no need for the user 
+to read/write R code.
+
+The CGI pages were initially written as part of the bioconductor project.  
+See the bioconductor vignette on "Textual Description of webbioc" to learn more 
+about the requirements for running and requirements for running these pages (Link below).  
+
+It should be noted that you do NOT have to download the pages from bioconductor, 
+the pages have been total integrated into SBEAMS so the actual use of the pages is 
+a bit different and the analysis capabilities have been extended, but the setup 
+requirements and some of the settings are still applicable
+http://bioconductor.org/repository/devel/vignette/demoscript.pdf
+
+
+# Create a new unix group, affydata, for example:
+/usr/sbin/groupadd affydata
+
+# Add web user to this group, e.g. (assumes web server runs as 'apache'):
+/usr/sbin/usermod -G affydata apache
+
+# Change the group of the delivery dir specified above (MA_BIOC_DELIVERY_PATH), 
+# default locatin used here as an example.
+chgrp -R affydata $SBEAMS/var/Microarray/Affy_data/delivery
+
+# Set sticky bit so all data will have the group arraydata
+chmod g+s  $SBEAMS/var/Microarray/Affy_data/delivery
+
+
+You can run the bioconductor jobs as a forked process, or farm them
+to a batch scheduler such as pbs.  To run the job on pbs you may need to create
+a new user (See Below), and set up a keyless ssh connection apache cgi script 
+can hand the job off to the batch scheduler, and that process can write files 
+back.  This is beyond the scope of this document, but we can provide more info
+if desired.
+
+In a default bioconductor installation, site specific settings are specified in
+the Site.pm module, located within SBEAMS at; 
+$SBEAMS/cgi/Microarray/bioconductor/Site.pm
+
+Virtually all such settings can now be specified in the SBEAMS.conf file, as
+outlined below.  One exception is the 'batch type' as described above.  If an
+option other than fork is chosen (the default in SBEAMS.conf), you will need to
+edit Site.pm directly.
+
+# Affy admin email address.  Notification of jobs being completed is sent to 
+# users if they request it;  this is the 'senders address'.
+CONFIG_SETTING{MA_ADMIN_EMAIL} = sbeams@localdomain.org 
+
+# Specify paths to R executable and library, done previously.
+
+# Batch method for running bioconductor R jobs.  Valid options include fork,
+# pbs, and sge. pbs and sge will require some source file editing to set up.
+CONFIG_SETTING{MA_BATCH_SYSTEM} = fork 
+
+# path to bioconductor delivery directory.  This is where various script and 
+# output files are stored, default given as a path relative to sbeams root.
+CONFIG_SETTING{MA_BIOC_DELIVERY_PATH}   = var/Microarray/Affy_data/delivery
+
+# path to affy annotation files.  These are tab-delimited text files from 
+# affymetrix describing the gene that each probeset represents.
+CONFIG_SETTING{MA_ANNOTATION_PATH}  =     var/Microarray/Affy_data/annotation
+
+# Settings for java/jnlp helper applications.  These are required to use the
+# packaged cytoscape or Tigr MEV (multi-array-viewer) applications.  Leaving
+# the defaults should result in a working system; if you would like to change
+# the certificate to a local version, you will have to unjar and rejar each of
+# the files under $sbeams/lib/java/SBEAMS/Microarray
+
+CONFIG_SETTING{JAVA_PATH} = /usr/java/j2sdk1.4/
+CONFIG_SETTING{JNLP_KEYSTORE} = lib/java/.keystore
+CONFIG_SETTING{KEYSTORE_PASSWD} = sbeams_distro
+CONFIG_SETTING{KEYSTORE_ALIAS} = sbeamsDistro   
+
+In order for these applications to work, you will also need to set up a java
+keystore as described below and resign the jar files as described below:
+
+Setup the a keystore for sbeams.  Example below
+keytool -keystore <local_path_on_web_server>/.keystore -genkey -alias sbeamsDev
+Enter keystore password: sbeamsDevKey
+What is your first and last name?
+[Unknown]: SBEAMS Development Team
+What is the name of your organizational unit?
+[Unknown]: SBEAMS Development
+What is the name of your organization?
+[Unknown]: Institute for Systems Biology
+What is the name of your City or Locality?
+[Unknown]: Seattle
+What is the name of your State or Province?
+[Unknown]: WA
+What is the two-letter country code for this unit?
+[Unknown]: US
+Is CN=SBEAMS Development Team, OU=SBEAMS Development, O=Institute for Systems Biology, L=Seattle, ST=WA, C=US correct?
+[no]: yes
+
+Enter key password for <sbeamsDev>
+(RETURN if same as keystore password):
+
+###############
+- Re-sign the all the cytoscape jars using the key above
+cd $SBEAMS/lib/scripts/Core
+## Re-sign all the plugin jars
+./Re_sign_jar_files.pl --dir $SBEAMS/usr/java/share/Cytoscape/plugins_1.0 \
+ --keystore <local_path_on_web_server>.keystore \
+ --keypass sbeamsDevKey \
+ --keyname sbeamsDev
+
+## Re-sign all the cytoscape and gaggle components
+  ./Re_sign_jar_files.pl --dir $SBEAMS/usr/java/share/Cytoscape/cytoscape_ps/jars \
+ --keystore <local_path_on_web_server>.keystore \
+ --keypass sbeamsDevKey \
+ --keyname sbeamsDev
+
+###############
+
+Update the makefile for signing the data files (that will be used in Cytoscape) with the key produced above
+cd $SBEAMS/lib/cytoscape/Microarray/GetExpression
+vi makefile 
+#change the line below to variables at your site.  
+#<java_path>                                     <keystore_path>                    <password>       <key to use, see above>    
+/tools/java/j2sdk1.4.2/bin/jarsigner -keystore /users/pshannon/.keystore -storepass cytokey data.jar cytoscape
+
+###############
+
+
+To run the pages
+#Open the main Microarray Module web page
+- Click on [Microarray]
+- Click on [Data Pipeline] 
+- Click on [Affy Analysis Pipeline]
+- Click on [Start New Analysis Session]
+#Make sure there are no errors displayed, if there are go back and check the settings.
+
+View the help document to learn how to analyze data sets
+
+http://<sbeams-server>/doc/Microarray/affy_help_pages/isb_help.php?help_page=Analysis/Pipeline/Pipeline_overview.xml
+Read about, "Grouping arrays","Normalizing Array Data" and "Analyze Arrays"
+
+
+-------------------------------------------------------------------------------
+Troubleshooting
+
+Problem: Analysis Pipeline doesn't produce diagnostic PNG images during
+normalization, and the R
+error code file shows "Ghostscript *.**: Unrecoverable error, exit code 1".
+Alternatively, producing JPEG images from the chips during
+load_affy_R_CHP_files.pl runs may not work.
+
+Fix: Install AFPL Ghostscript 8.51.
+
+Problem: Analysis Pipeline produces truncated (size 0) png files during
+normalization and SAM/ttest analysis.
+
+Fix: Netpbm libraries not installed or not in path of analysis user (arraybot),
+download and install from http://netpbm.sourceforge.net
+
