@@ -1,0 +1,94 @@
+#!/usr/local/bin/perl -w
+
+use strict;
+
+use lib qw (../../lib/perl);
+
+use SBEAMS::Client;
+use SBEAMS::Connection::DataTable;
+use SBEAMS::Connection qw( $q $log );
+use CGI;
+use Archive::Zip qw( :ERROR_CODES :CONSTANTS );
+use File::Basename;
+
+$|++;
+
+use constant URI => 'http://db.systemsbiology.net/sbeams';
+use constant AUTH => '/net/dblocal/wwwspecial/scgap/SCGAPAuth2';
+
+#my $q = CGI->new();
+
+## Main block
+{
+
+  my $pid = $q->param( 'project_id' );
+  my @allowed_projects = qw( 511 517 413 414 423 458 435 460 );
+  unless( grep /^$pid$/, @allowed_projects ) {
+    print $q->header();
+    print "ERROR: You are not permitted to access project_id '$pid'";
+    exit;
+  }
+
+
+  # Instantiate the SBEAMS client
+  my $sbeams = SBEAMS::Client->new();
+  my $command = 'Microarray/getProjectFileInfo';
+  my $params = { project_id => $pid, output_mode => 'tsv' };
+
+
+  # Authenticate
+  unless ( $sbeams->authenticate( server_uri => URI,
+				  SBEAMSAuth_file => AUTH )) {
+    print "Content-type: html/text\n\n";
+    print "ERROR: Unable to authenticate with these credentials\n";
+    exit;
+  }
+
+  # Fetch results
+  my $rset = $sbeams->fetch_data(  server_uri         => URI,
+                                   server_command     => $command,
+                                   command_parameters => $params );
+  unless( $rset->{is_success} ) {
+    print STDERR "ERROR: Unable to fetch data\n";
+    exit;
+  }
+
+  my $p_idx = $rset->{column_hash_ref}->{file_path};
+  my $r_idx = $rset->{column_hash_ref}->{file_root};
+  my $t_idx = $rset->{column_hash_ref}->{project_tag};
+  	
+	my $zip = Archive::Zip->new();
+	my $member = '';
+	my $size = '';
+
+  my $tagname = $q->param( 'project_name' );
+  $tagname =~ s/\s+/_/g;
+
+	foreach my $file ( @{$rset->{data_ref}} ) {
+    unless ( $tagname ) {
+      $tagname = $file->[$t_idx];
+      $zip->addDirectory( $tagname );
+    }
+    my $name = $file->[$r_idx] . '.CEL';
+    my $pathname = $file->[$p_idx] . '/' . $name;
+    if ( -e $pathname ) {
+      $member = $zip->addFile($pathname, "$file->[$t_idx]/$name"); 
+    } else {
+      $log->warn( "Cannot find file $pathname, although db thinks it exists" );
+    }
+	  $size += $member->uncompressedSize();
+  }
+  # Can't yet determine compressed size, have to guess, doh!
+  my $csize = int($size/2.5);
+
+  print $q->header( '-Content_Disposition' => "filename=${tagname}.zip",
+                       '-Content_Length' => "$csize",
+                       '-Content_Transfer_Encoding' => "binary",
+                       '-Content_Type' => 'application/force-download' );
+
+
+ $zip->writeToFileHandle( 'STDOUT', 0 );
+  exit;
+
+}
+

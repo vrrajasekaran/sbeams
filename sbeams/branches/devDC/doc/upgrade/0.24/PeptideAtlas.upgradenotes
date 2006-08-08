@@ -1,0 +1,497 @@
+
+The following changes to the PeptideAtlas database should be made when
+upgrading SBEAMS
+
+from version 0.22
+  to 0.23 (development branch)
+     0.24 (next release)
+     or later
+
+---------------
+
+2006-03-06
+
+Schema changes (see full definitions in driver tables):
+
+- Added to table 'peptide' column 'peptide_isoelectric_point'
+
+- Added to table 'peptide_instance' columns 'preceding_residue',
+  'following_residue', 'original_protein_name',CCT11M 'best_adjusted_probability'
+
+- Added to table 'peptide_instance' columns 'n_samples', 'n_protein_samples',
+  'empirical_proteotypic_score', 'predicted_proteotypic_score'
+
+- The following new tables were added
+  - atlas_build_search_batch
+  - atlas_search_batch
+  - peptide_instance_search_batch
+  - modified_peptide_instance
+  - modified_peptide_instance_sample
+  - modified_peptide_instance_search_batch
+
+To create these tables, check the definitions produced by generate_schema
+with something like:
+
+cd $SBEAMS/lib/scripts/Core
+set dbtype="mssql"
+./generate_schema.pl \
+  --table_prop ../../conf/PeptideAtlas/PeptideAtlas_table_property.txt \
+  --table_col ../../conf/PeptideAtlas/PeptideAtlas_table_column.txt \
+  --schema_file ../../sql/PeptideAtlas/PeptideAtlas \
+  --module PeptideAtlas \
+  --destination_type $dbtype
+
+---------------
+
+2006-03-08
+
+Schema changes (see full definitions in driver tables):
+
+- Added to table 'peptide' column 'molecular_weight'
+
+- Rerun update driver tables with something like:
+
+cd $SBEAMS/lib/script/Core
+./update_driver_tables.pl \
+  ../../conf/PeptideAtlas/PeptideAtlas_table_column.txt
+
+- Import the latest query option refdata:
+
+$SBEAMS/lib/scripts/Core/DataImport.pl \
+  --source_file $SBEAMS/lib/refdata/PeptideAtlas/PeptideAtlas_query_option.xml
+
+
+---------------
+
+2006-03-23
+
+Schema changes (see full definitions in driver tables):
+
+- Added to table 'atlas_search_batch' column 'TPP_version'
+- Added to table 'peptide_instance' column 'n_adjusted_observations'
+- Added to table 'peptide_instance' column 'n_sibling_peptides'
+- Added to table 'modified_peptide_instance' column 'n_adjusted_observations'
+- Added to table 'modified_peptide_instance' column 'n_sibling_peptides'
+- Added table 'spectra_description_set'
+- Added table 'atlas_search_batch_parameter'
+- Added table 'atlas_search_batch_parameter_set'
+
+- Reran update driver tables
+
+- Populated the SQL scripts:
+
+    setenv SBEAMS fullPathToYourDevArea/sbeams
+    cd $SBEAMS/lib/scripts/Core
+
+    foreach dbtype ( mssql mysql pgsql )
+        ./generate_schema.pl --table_prop ../../conf/PeptideAtlas/PeptideAtlas_table_property.txt \
+        --table_col ../../conf/PeptideAtlas/PeptideAtlas_table_column.txt --schema_file \
+        ../../sql/PeptideAtlas/PeptideAtlas --destination_type $dbtype
+    end
+
+
+- Altered with sql the server tables with CREATE TABLE and ALTER TABLE statements
+
+- Added the new tables to $SBEAMS/lib/perl/SBEAMS/PeptideAtlas/Tables.pm
+
+
+---------------
+
+2006-03-28
+
+Schema changes (see full definitions in driver tables):
+
+- Added to table 'spectra_description_set' column 'instrument_model_name'
+    ALTER TABLE spectra_description_set ADD instrument_model_name varchar(100)
+
+- Reran update driver tables
+
+- Populated the SQL scripts:
+
+    setenv SBEAMS fullPathToYourDevArea/sbeams
+    cd $SBEAMS/lib/scripts/Core
+
+    foreach dbtype ( mssql mysql pgsql )
+        ./generate_schema.pl --table_prop ../../conf/PeptideAtlas/PeptideAtlas_table_property.txt \
+        --table_col ../../conf/PeptideAtlas/PeptideAtlas_table_column.txt --schema_file \
+        ../../sql/PeptideAtlas/PeptideAtlas --destination_type $dbtype
+    end
+
+
+- Altered with sql the server table with ALTER TABLE statement
+
+---------------
+
+2006-04-03
+
+- changed is_nullable to 'Y' for modified_peptide_instance's best_adjusted_probability
+    ALTER TABLE modified_peptide_instance ALTER sample_id int NULL
+
+---------------
+
+2006-04-04
+setenv SBEAMS fullPathToYourDevArea/sbeams
+
+- edited  $SBEAMS/lib/conf/PeptideAtlas/PeptideAtlas_table_property.txt
+   --> added sample_id to table atlas_search_batch
+   --> removed data_path from table atlas_build_search_batch
+   --> added n_spectra to table spectra_description_set
+   --> removed n_searched_spectra from  table atlas_build_search_batch
+
+- Reran update driver tables
+   cd $SBEAMS/sbeams/lib/scripts/Core
+
+    set CONFDIR = "../../conf"
+
+    ./update_driver_tables.pl $CONFDIR/PeptideAtlas/PeptideAtlas_table_column.txt
+
+    ./update_driver_tables.pl $CONFDIR/PeptideAtlas/PeptideAtlas_table_property.txt
+
+
+- Populated the SQL scripts:
+    cd $SBEAMS/lib/scripts/Core
+
+    foreach dbtype ( mssql mysql pgsql )
+        ./generate_schema.pl --table_prop ../../conf/PeptideAtlas/PeptideAtlas_table_property.txt \
+        --table_col ../../conf/PeptideAtlas/PeptideAtlas_table_column.txt --schema_file \
+        ../../sql/PeptideAtlas/PeptideAtlas --destination_type $dbtype
+    end
+
+- sql calls to update server tables:
+
+*NOTE: tailor these to your table names*
+
+    ALTER TABLE atlas_search_batch ADD sample_id int
+
+    ALTER TABLE atlas_build_search_batch DROP COLUMN data_path
+
+    ALTER TABLE spectra_description_set ADD n_spectra int
+
+    ALTER TABLE atlas_build_search_batch DROP COLUMN n_searched_spectra
+
+---------------
+
+2006-05-01
+
+Schema changes (see full definitions in driver tables):
+
+- Added to PeptideAtlas_table_column.txt
+ a new column 'sample_accession' in table 'sample'
+
+- Updated driver tables
+
+- Populated the SQL scripts:
+
+    setenv SBEAMS fullPathToYourDevArea/sbeams
+    cd $SBEAMS/lib/scripts/Core
+
+    foreach dbtype ( mssql mysql pgsql )
+        ./generate_schema.pl --table_prop ../../conf/PeptideAtlas/PeptideAtlas_table_property
+.txt \
+        --table_col ../../conf/PeptideAtlas/PeptideAtlas_table_column.txt --schema_file \
+        ../../sql/PeptideAtlas/PeptideAtlas --destination_type $dbtype
+    end
+
+
+- Altered with sql the server table with ALTER TABLE statement
+
+ALTER TABLE PeptideAtlas.dbo.sample ADD sample_accession varchar(255)
+
+
+---------------
+
+2006-06-15
+
+Schema changes (see full definitions in driver tables):
+
+default_atlas_build: added column organism_specialized_build varchar(50) after organism_id
+
+sample: added column organism_id int after sample_accession
+
+atlas_search_batch: added column pepXML_source_files varchar(255) after search_batch_subdir
+
+peptide: added column SSRCalc_relative_hydrophobicity after molecular_weight
+modified_peptide_instance: added columns monoisotopic_peptide_mass, average_peptide_mass, monoisotopic_parent_mz, average_parent_mz all float*8 (double precision) after peptide_charge
+
+search_key: added column atlas_build_id int after search_key_dbxref_id
+
+After updating the tables, rerun update_driver_tables.pl as described
+above.
+
+---------------
+
+2006-07-06
+
+Schema changes (see full definitions in driver tables):
+
+- Added to PeptideAtlas_table_column.txt, new tables:
+
+      NIST_library_spectrum
+      NIST_library_spectrum_peak
+      NIST_spectrum_type
+      spectrum_identification
+      spectrum
+      spectrum_peak
+ a new column 'sample_accession' in table 'sample'
+
+- Updated driver tables
+
+- Populated the SQL scripts:
+
+    setenv SBEAMS fullPathToYourDevArea/sbeams
+    cd $SBEAMS/lib/scripts/Core
+
+    foreach dbtype ( mssql mysql pgsql )
+        ./generate_schema.pl --table_prop ../../conf/PeptideAtlas/PeptideAtlas_table_property.txt \
+        --table_col ../../conf/PeptideAtlas/PeptideAtlas_table_column.txt --schema_file \
+        ../../sql/PeptideAtlas/PeptideAtlas --destination_type $dbtype
+    end
+
+- Altered the SQL server tables
+  
+    [Can copy the sql statements directly from lib/sql/PeptideAtlas/PeptideAtlas_CREATETABLES.mssql]
+
+
+CREATE TABLE NIST_library_spectrum (
+  NIST_library_spectrum_id   int IDENTITY NOT NULL,
+  sequence                   varchar(255) NOT NULL,
+  modified_sequence          varchar(255) NOT NULL,
+  charge                     int NOT NULL,
+  NIST_spectrum_type_id      int NOT NULL,
+  modifications              varchar(255) NULL,
+  organism_id                int NULL,
+  protein_name               varchar(255) NULL,
+  mz_exact                   float NOT NULL,
+  PRIMARY KEY (NIST_library_spectrum_id)
+)
+GO
+
+CREATE TABLE NIST_library_spectrum_peak (
+  NIST_library_spectrum_peak_id  int IDENTITY NOT NULL,
+  NIST_library_spectrum_id   int NOT NULL,
+  mz                         float NOT NULL,
+  relative_intensity         int NOT NULL,
+  ion_label                  varchar(255) NULL,
+  peak_label                 varchar(255) NULL,
+  PRIMARY KEY (NIST_library_spectrum_peak_id)
+)
+GO
+
+CREATE TABLE NIST_spectrum_type (
+  NIST_spectrum_type_id      int IDENTITY NOT NULL,
+  NIST_spectrum_type_name    varchar(50) NOT NULL,
+  NIST_spectrum_type_description  varchar(1024) NOT NULL,
+  PRIMARY KEY (NIST_spectrum_type_id)
+)
+GO
+
+
+CREATE TABLE spectrum_identification (
+  spectrum_identification_id  int IDENTITY NOT NULL,
+  modified_peptide_instance_id  int NOT NULL,
+  probability                real NOT NULL,
+  spectrum_id                int NOT NULL,
+  atlas_search_batch_id      int NOT NULL,
+  PRIMARY KEY (spectrum_identification_id)
+)
+GO
+
+
+CREATE TABLE spectrum (
+  spectrum_id                int IDENTITY NOT NULL,
+  sample_id                  int NOT NULL,
+  spectrum_name              varchar(50) NOT NULL,
+  start_scan                 int NOT NULL,
+  end_scan                   int NOT NULL,
+  scan_index                 int NOT NULL,
+  PRIMARY KEY (spectrum_id)
+)
+GO
+
+
+CREATE TABLE spectrum_peak (
+  spectrum_peak_id           int IDENTITY NOT NULL,
+  spectrum_id                int NOT NULL,
+  mz                         float NOT NULL,
+  relative_intensity         int NOT NULL,
+  PRIMARY KEY (spectrum_peak_id)
+)
+GO
+
+
+Update the sql server tables with forein key constraints also
+
+ALTER TABLE NIST_library_spectrum ADD CONSTRAINT fk_NIST_library_spectrum_NIST_spectrum_type_id FOREIGN KEY (NIST_spectrum_type_id) REFERENCES NIS
+T_spectrum_type(NIST_spectrum_type_id)
+GO
+ALTER TABLE NIST_library_spectrum ADD CONSTRAINT fk_NIST_library_spectrum_organism_id FOREIGN KEY (organism_id) REFERENCES organism(organism_id)
+GO
+ALTER TABLE NIST_library_spectrum_peak ADD CONSTRAINT fk_NIST_library_spectrum_peak_NIST_library_spectrum_id FOREIGN KEY (NIST_library_spectrum_id
+) REFERENCES NIST_library_spectrum(NIST_library_spectrum_id)
+GO
+ALTER TABLE spectrum_identification ADD CONSTRAINT fk_spectrum_identification_modified_peptide_instance_id FOREIGN KEY (modified_peptide_instance_
+id) REFERENCES modified_peptide_instance(modified_peptide_instance_id)
+GO
+ALTER TABLE spectrum_identification ADD CONSTRAINT fk_spectrum_identification_spectrum_id FOREIGN KEY (spectrum_id) REFERENCES spectrum(spectrum_i
+d)
+GO
+ALTER TABLE spectrum_identification ADD CONSTRAINT fk_spectrum_identification_atlas_search_batch_id FOREIGN KEY (atlas_search_batch_id) REFERENCES
+ atlas_search_batch(atlas_search_batch_id)
+GO
+ALTER TABLE spectrum ADD CONSTRAINT fk_spectrum_sample_id FOREIGN KEY (sample_id) REFERENCES sample(sample_id)
+GO
+ALTER TABLE spectrum_peak ADD CONSTRAINT fk_spectrum_peak_spectrum_id FOREIGN KEY (spectrum_id) REFERENCES spectrum(spectrum_id)
+GO
+
+-- Add the new tables to lib/perl/SBEAMS/PeptideAtlas/Tables.pm
+
+-----------------------------------------------------------------------
+
+2006-07-17
+
+Schema changes (see full definitions in driver tables):
+
+- Added to PeptideAtlas_table_column.txt, new tables:
+
+      NIST_library_spectrum_comment
+      NIST_library
+
+- Added to PeptideAtlas_table_column.txt
+       charge int(4) to table NIST_library_spectrum_peak
+
+- Removed from NIST_library_spectrum, the organism_id field
+(it's now in NIST_library)
+
+- Updated driver tables
+
+- Populated the SQL scripts:
+
+    setenv SBEAMS fullPathToYourDevArea/sbeams
+    cd $SBEAMS/lib/scripts/Core
+
+    foreach dbtype ( mssql mysql pgsql )
+        ./generate_schema.pl --table_prop ../../conf/PeptideAtlas/PeptideAtlas_table_property.txt \
+        --table_col ../../conf/PeptideAtlas/PeptideAtlas_table_column.txt --schema_file \
+        ../../sql/PeptideAtlas/PeptideAtlas --destination_type $dbtype
+    end
+
+- Altered the SQL server tables
+  
+[Can copy the sql statements directly from lib/sql/PeptideAtlas/PeptideAtlas_CREATETABLES.mssql]
+
+CREATE TABLE NIST_library_spectrum_comment (
+  NIST_library_spectrum_id   int NOT NULL,
+  parameter_key              varchar(100) NOT NULL,
+  parameter_value            varchar(255) NOT NULL
+)
+GO
+
+ALTER TABLE NIST_library_spectrum_peak ADD charge int
+
+CREATE TABLE NIST_library (
+  NIST_library_id            int IDENTITY NOT NULL,
+  organism_id                int NULL,
+  PRIMARY KEY (NIST_library_id)
+)
+GO
+
+ALTER TABLE NIST_library_spectrum DROP COLUMN organism_id
+
+
+-- Alter the foreign key constraints in server table:
+
+ALTER TABLE NIST_library_spectrum_comment 
+ADD CONSTRAINT fk_NIST_library_spectrum_comment_NIST_library_spectrum_id 
+FOREIGN KEY (NIST_library_spectrum_id) 
+REFERENCES NIST_library_spectrum(NIST_library_spectrum_id)
+GO
+
+-- Add the new tables to lib/perl/SBEAMS/PeptideAtlas/Tables.pm
+
+-- populate NIST_spectrum_type with 'Consensus', 'Replicate', and
+'Single' types
+begin transaction
+  insert into PeptideAtlas.dbo.NIST_spectrum_type
+    (NIST_spectrum_type_name, NIST_spectrum_type_description)
+    VALUES
+    ('Consensus', 'Spectrum of a peptide ion constructed from multiple spectra')
+  insert into PeptideAtlas.dbo.NIST_spectrum_type
+    (NIST_spectrum_type_name, NIST_spectrum_type_description)
+    VALUES
+    ('Single', 'Spectrum of a peptide ion with a reliable identification, but seen only once ')
+  insert into PeptideAtlas.dbo.NIST_spectrum_type
+     (NIST_spectrum_type_name, NIST_spectrum_type_description)
+     VALUES
+    ('Replicate', 'Spectrum of a peptide ion from a single acquisition that is the best matching used in making a Consensus spectrum')
+commit transaction
+
+
+-----------------------------------------------------------------------
+
+2006-07-18
+
+Schema changes (see full definitions in driver tables):
+
+- Added to PeptideAtlas_table_column.txt, 
+  added field NIST_library_id foreign key to NIST_library_spectrum table
+
+  made field modified_sequence nullable in NIST_library_spectrum table
+
+  added fields comment, created_by_id, date_modified, modified_by_id,
+  owner_group_id, and record_status to NIST_library
+
+
+- Updated driver tables
+
+- Populated the SQL scripts:
+
+    setenv SBEAMS fullPathToYourDevArea/sbeams
+    cd $SBEAMS/lib/scripts/Core
+
+    foreach dbtype ( mssql mysql pgsql )
+        ./generate_schema.pl --table_prop ../../conf/PeptideAtlas/PeptideAtlas_table_property.txt \
+        --table_col ../../conf/PeptideAtlas/PeptideAtlas_table_column.txt --schema_file \
+        ../../sql/PeptideAtlas/PeptideAtlas --destination_type $dbtype
+    end
+
+- Altered the SQL server tables
+
+  ALTER TABLE PeptideAtlas.dbo.NIST_library_spectrum ADD NIST_library_id int  
+
+  ALTER TABLE NIST_library_spectrum 
+  ADD CONSTRAINT fk_NIST_library_spectrum_NIST_library_id 
+  FOREIGN KEY (NIST_library_id) REFERENCES NIST_library(NIST_library_id)
+  GO
+
+  ALTER TABLE NIST_library_spectrum DROP COLUMN modified_sequence
+  ALTER TABLE NIST_library_spectrum ADD modified_sequence varchar(255)
+
+  ALTER TABLE NIST_library ADD comment       text
+  ALTER TABLE NIST_library ADD date_created  datetime
+  ALTER TABLE NIST_library ADD created_by_id    int 
+  ALTER TABLE NIST_library ADD date_modified    datetime
+  ALTER TABLE NIST_library ADD modified_by_id   int
+  ALTER TABLE NIST_library ADD owner_group_id   int
+  ALTER TABLE NIST_library ADD record_status    char(1) 
+
+  ALTER TABLE NIST_library_spectrum_comment 
+      ALTER COLUMN parameter_value varchar(1023)
+
+  edited lib/perl/SBEAMS/PeptideAtlas/Tables.pm to capitalize NIST
+
+-----------------------------------------------------------------------
+
+2006-07-19
+
+Schema change (see full definitions in driver tables):
+
+- expnded is_subpeptide_of from 255 to 1023 in peptide_instance table
+
+- Updated driver tables
+
+- Populated the SQL scripts
+
+- alter server table with sql:
+ALTER TABLE peptide_instance ALTER COLUMN is_subpeptide_id (1023)
+
+
